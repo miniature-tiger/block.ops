@@ -26,12 +26,13 @@ version used: mongodb@3.1.4
 ### Set-up Block.Ops blocknumber index
 Block.Ops is run with node.js via the command line. 
 * Launch MongoDB.
-* Run setup using => $node blockOps setup
+* Run setup using => $ node blockOps setup
 
 ### Block.Ops functions
 Once the blocknumber index has been created the following commands can be used for Block.Ops functionality:
-* ... 
-
+$ node blockOps ...
+* checkBlockDates: Test succesful setup of blockDates list and report
+* remove <nameOfCollectionToRemove>: Removes all records from a collection (handle with care!)
 
 
 
@@ -39,5 +40,4 @@ Once the blocknumber index has been created the following commands can be used f
 
 ## Road map:
 
-### Historic Analysis
-* 
+### To be completed
