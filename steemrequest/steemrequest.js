@@ -119,6 +119,20 @@ module.exports.checkFirstBlock = checkFirstBlock;
 
 
 
+// Function returns a single block from AppBase with all operations including virtual operations (uses condenser_api.get_ops_in_block)
+// -----------------------------------------------------------------------------------------------------------------------------------
+function getOpsAppBase(localBlockNo, processOps) {
+    dataString = '{"jsonrpc":"2.0", "method":"condenser_api.get_ops_in_block", "params": [' + localBlockNo + '], "id":1}';
+    let options = {
+        url: 'https://api.steemit.com',
+        method: 'POST',
+        body: dataString
+    }
+    request(options, processOps);
+}
+
+module.exports.getOpsAppBase = getOpsAppBase;
+
 // Function checks whether two UTC dates are on the same day
 // ---------------------------------------------------------
 // < Returns a boolean >

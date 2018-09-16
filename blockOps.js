@@ -39,6 +39,10 @@ if (commandLine == 'setup') {
     removeCollection(parameter1);
 } else if (commandLine == 'checkBlockDates') {
     checkAllBlockDates();
+} else if (commandLine == 'filloperations') {
+    fillOperations();
+} else if (commandLine == 'reportcomments') {
+    mongoblock.reportComments(MongoClient, url, dbName);
 } else {
     // end
 }
@@ -209,4 +213,124 @@ async function checkAllBlockDates() {
     // Closing MongoDB
     console.log('closing');
     client.close();
+}
+
+
+// Function to process a loop of blocks (including virtual operations)
+// -------------------------------------------------------------------
+async function fillOperations() {
+    // Opening MongoDB
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let checkC = await mongoblock.checkCollectionExists(db, 'comments');
+    if (checkC == false) {
+        db.collection('comments').createIndex({author: 1, permlink: 1}, {unique:true});
+    }
+
+    let blocksStarted = 0;
+    let blocksCompleted = 0;
+    let errorCount = 0;
+    let blocksToProcess = 0;
+    let blocksPerRound = 8; // x blocks called for processing at a time
+    let unknownOperations = [];
+
+    openDate = new Date(parameter1);
+    openDateEnd = helperblock.forwardOneDay(openDate);
+    closeDate = openDateEnd; // short cut for one day calc - TO UPDATE WITH parameter2
+    closeDateEnd = helperblock.forwardOneDay(closeDate);
+    console.log(openDate, closeDate);
+
+    // Extracts start and end blockNumbers for analysis period from blockDates index
+    db.collection('blockDates').find({timestamp: {$gte: openDate, $lt: openDateEnd}}).project({ timestamp: 1, blockNumber: 1, _id: 0 }).toArray()
+        .then(function(records) {
+            openBlock = records[0].blockNumber;
+        }).catch(function(error) {
+            console.log(error)
+        });
+    await db.collection('blockDates').find({timestamp: {$gte: closeDate, $lt: closeDateEnd}}).project({ timestamp: 1, blockNumber: 1, _id: 0 }).toArray()
+        .then(function(records) {
+            closeBlock = records[0].blockNumber-1;
+        }).catch(function(error) {
+            console.log(error)
+        });
+
+    blocksToProcess = closeBlock - openBlock + 1;
+    //blocksToProcess = 1200; // reduced to 1200 (1 hour for testing)
+    console.log(openBlock, blocksToProcess);
+
+    fiveBlock(openBlock);
+
+    // Function to extract data of x blocks from the blockchain (originally five blocks)
+    // ---------------------------------------------------------------------------------
+    function fiveBlock(localOpenBlock) {
+        let launchBlocks = Math.min(blocksPerRound, blocksToProcess - blocksStarted)
+        console.log(launchBlocks, blocksToProcess - blocksStarted);
+        for (var i = 0; i < launchBlocks; i+=1) {
+            blockNo = localOpenBlock + i;
+            console.log('----------------');
+            console.log('started ' + blockNo);
+            // Gets data for one block, processes it in callback "processOps"
+            steemrequest.getOpsAppBase(blockNo, processOps);
+            blocksStarted += 1;
+            console.log('----------------');
+        }
+    }
+
+    // Function to process block of operations
+    // -----------------------------------------
+    function processOps(error, response, body) {
+        if (!error && response.statusCode == 200) {
+            try {
+                let result = JSON.parse(body).result;
+                let timestamp = result.timestamp;
+
+                for (let operation of result) {
+                    // Extracts blockNumber just once for all operations
+                    if (operation.trx_in_block == 0) {
+                        blockProcessed = operation.block;
+                    }
+                    if (operation.op[0] == 'comment') {
+                        mongoblock.processComment(operation, mongoblock.mongoComment, db);
+                    } else {
+                        // Operations not handled:
+                        if (!unknownOperations.includes(operation.op[0])) {
+                            unknownOperations.push(operation.op[0]);
+                        }
+                    }
+                }
+                blocksCompleted += 1;
+                console.log('----------------');
+                console.log('finished ' + blockProcessed + ' (' + blocksCompleted + ')' );
+                console.log('----------------');
+
+                if (blocksCompleted == blocksToProcess) {
+                    let runTime = Date.now() - launchTime;
+                    console.log('unknownOperations: ', unknownOperations);
+                    console.log('End time: ' + (Date.now() - launchTime));
+                    console.log('----------------');
+                    console.log('REPORT');
+                    console.log('Start date: ', openDate);
+                    console.log('Blocks covered: ', openBlock + ' to ' + closeBlock);
+                    console.log('Blocks processed: ' + blocksCompleted);
+                    console.log('Error Count: ' + errorCount);
+                    console.log('Average speed: ' + (runTime/blocksCompleted/1000).toFixed(4) + 's.');
+                    console.log('db closing');
+                    //mclient.close();
+
+
+                } else if (blocksStarted - blocksCompleted < 5) {
+                    fiveBlock(openBlock + blocksStarted);
+                }
+            } catch {
+                console.log(response);
+            }
+        } else {
+            console.log('Most likely error is connection lost'); // to do: deal with checking which blocks loaded, reconnecting, and restarting loop.
+            blocksCompleted += 1;
+            errorCount += 1;
+        }
+    }
+// Closing fillOperations
 }
