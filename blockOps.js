@@ -1,6 +1,8 @@
 // Time reporting for measuring speed of block parsing
 // ---------------------------------------------------
 console.log('------------------------------------------------------------------------');
+console.log('------------------------------------------------------------------------');
+console.log('------------------------------------------------------------------------');
 console.log('                               Start                   ');
 const launchTime = Date.now();
 console.log('                             time = ' + (Date.now() - launchTime));
@@ -39,6 +41,12 @@ if (commandLine == 'setup') {
     removeCollection(parameter1);
 } else if (commandLine == 'checkBlockDates') {
     checkAllBlockDates();
+} else if (commandLine == 'filloperations') {
+    fillOperations();
+} else if (commandLine == 'reportcomments') {
+    mongoblock.reportComments(MongoClient, url, dbName);
+} else if (commandLine == 'reportblocks') {
+    reportBlocks();
 } else {
     // end
 }
@@ -209,4 +217,179 @@ async function checkAllBlockDates() {
     // Closing MongoDB
     console.log('closing');
     client.close();
+}
+
+
+// Function to process a loop of blocks (including virtual operations)
+// -------------------------------------------------------------------
+async function fillOperations() {
+    // Opening MongoDB
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let checkCo = await mongoblock.checkCollectionExists(db, 'comments');
+    if (checkCo == false) {
+        db.collection('comments').createIndex({author: 1, permlink: 1}, {unique:true});
+    }
+    let checkCb = await mongoblock.checkCollectionExists(db, 'blocksProcessed');
+    if (checkCb == false) {
+        db.collection('blocksProcessed').createIndex({blockNumber: 1}, {unique:true});
+    }
+
+    let blocksStarted = 0;
+    let blocksCompleted = 0;
+    let errorCount = 0;
+    let blocksToProcess = 0;
+    let blocksPerRound = 8; // x blocks called for processing at a time
+    let unknownOperations = [];
+
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    console.log(openBlock, closeBlock, parameterIssue);
+
+    blocksToProcess = closeBlock - openBlock;
+    console.log(openBlock, blocksToProcess);
+
+    fiveBlock(openBlock);
+
+    // Function to extract data of x blocks from the blockchain (originally five blocks)
+    // ---------------------------------------------------------------------------------
+    function fiveBlock(localOpenBlock) {
+        let launchBlocks = Math.min(blocksPerRound, blocksToProcess - blocksStarted)
+        console.log(launchBlocks, blocksToProcess - blocksStarted);
+        for (var i = 0; i < launchBlocks; i+=1) {
+            blockNo = localOpenBlock + i;
+            console.log('----------------');
+            console.log('started ' + blockNo);
+            // Gets data for one block, processes it in callback "processOps"
+            steemrequest.getOpsAppBase(blockNo, processOps);
+            blocksStarted += 1;
+            console.log('----------------');
+        }
+    }
+
+    // Function to process block of operations
+    // -----------------------------------------
+    function processOps(error, response, body, localBlockNo) {
+        if (!error) {
+            try {
+                let result = JSON.parse(body).result;
+                for (let operation of result) {
+                    // Extracts blockNumber just once for all operations
+                    if (operation.trx_in_block == 0) {
+                        blockProcessed = operation.block;
+                        timestamp = operation.timestamp;
+                    }
+                    if (operation.op[0] == 'comment') {
+                        mongoblock.processComment(operation, mongoblock.mongoComment, db);
+                    } else {
+                        // Operations not handled:
+                        if (!unknownOperations.includes(operation.op[0])) {
+                            unknownOperations.push(operation.op[0]);
+                        }
+                    }
+                }
+                // Add record of block processed to database
+                let blockRecord = {blockNumber: blockProcessed, timestamp: timestamp, status: 'OK'};
+                db.collection('blocksProcessed').insertOne(blockRecord, (error, results) => {
+                    if(error) { if(error.code != 11000) {console.log(error);}}
+                });
+
+                blocksCompleted += 1;
+                console.log('----------------');
+                console.log('finished ' + blockProcessed + ' (' + blocksCompleted + ')' );
+                console.log('----------------');
+
+                if (blocksCompleted == blocksToProcess) {
+                    let runTime = Date.now() - launchTime;
+                    console.log('unknownOperations: ', unknownOperations);
+                    console.log('End time: ' + (Date.now() - launchTime));
+                    console.log('----------------');
+                    console.log('REPORT');
+                    console.log('Start date: ', openDate);
+                    console.log('Blocks covered: ', openBlock + ' to ' + closeBlock);
+                    console.log('Blocks processed: ' + blocksCompleted);
+                    console.log('Error Count: ' + errorCount);
+                    console.log('Average speed: ' + (runTime/blocksCompleted/1000).toFixed(4) + 's.');
+                    console.log('db closing');
+                    //mclient.close();
+
+
+                } else if (blocksStarted - blocksCompleted < 5) {
+                    fiveBlock(openBlock + blocksStarted);
+                }
+            } catch (error) {
+                console.log(error);
+            }
+        } else {
+            console.log('Error in processing block:', localBlockNo);
+            if (error.errno = 'ENOTFOUND') {
+                console.log('ENOTFOUND: Most likely error is connection lost.'); // to do: deal with checking which blocks loaded, reconnecting, and restarting loop.
+            } else {
+                console.log(error);
+            }
+            let blockRecord = {blockNumber: localBlockNo, status: 'error'};
+            db.collection('blocksProcessed').insertOne(blockRecord, (error, results) => {
+                if(error) { if(error.code != 11000) {console.log(error);}}
+            });
+            blocksCompleted += 1;
+            errorCount += 1;
+        }
+    }
+// Closing fillOperations
+}
+
+
+// Function to convert parameters for a date range into blockNumbers
+// -----------------------------------------------------------------
+// Accepts two dates as parameters  or a date and a number
+// Parameters are global and defined on command line
+async function blockRangeDefinition(db) {
+
+    let openBlock = 0, closeBlock = 0, parameterIssue = false;
+
+    if (typeof parameter1 == 'string') {
+        openDate = new Date(parameter1);
+        openDateEnd = helperblock.forwardOneDay(openDate);
+        openBlock = await mongoblock.dateToBlockNumber(openDate, openDateEnd, db)
+            .catch(function(error) {
+                console.log(error);
+                parameterIssue = true;
+            });
+    } else {
+        parameterIssue = true;
+    }
+
+    if (!(isNaN(parameter2))) {
+        closeBlock = openBlock + Number(parameter2);
+    } else if (typeof parameter2 == 'string') {
+        closeDate = new Date(parameter2);
+        closeDateEnd = helperblock.forwardOneDay(closeDate);
+        closeBlock = await mongoblock.dateToBlockNumber(closeDate, closeDateEnd, db)
+            .catch(function(error) {
+                console.log(error);
+                parameterIssue = true;
+            });
+    } else {
+        parameterIssue = true;
+    }
+
+    return [openBlock, closeBlock, parameterIssue];
+}
+
+
+// Function to provide parameters for reportBlocksProcessed
+// --------------------------------------------------------
+async function reportBlocks() {
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        await mongoblock.reportBlocksProcessed(db, openBlock, closeBlock, 'report');
+    } else {
+        console.log('Parameter issue');
+    }
 }

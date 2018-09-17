@@ -105,12 +105,9 @@ async function checkFirstBlock(blockNo, date) {
 
     if (checkSameDay(blockRecordFirst.timestamp, date) == true && checkSameDay(forwardOneDay(blockRecordPrior.timestamp), date) == true) {
         result = {check: true, timestamp: blockRecordFirst.timestamp};
-        //console.log('passes true');
     } else {
         result = {check: false, timestamp: blockRecordFirst.timestamp};
-        //console.log('passes false');
     }
-    //console.log(result);
 
     return result;
 }
@@ -118,6 +115,22 @@ async function checkFirstBlock(blockNo, date) {
 module.exports.checkFirstBlock = checkFirstBlock;
 
 
+
+// Function returns a single block from AppBase with all operations including virtual operations (uses condenser_api.get_ops_in_block)
+// -----------------------------------------------------------------------------------------------------------------------------------
+function getOpsAppBase(localBlockNo, processOps) {
+    dataString = '{"jsonrpc":"2.0", "method":"condenser_api.get_ops_in_block", "params": [' + localBlockNo + '], "id":1}';
+    let options = {
+        url: 'https://api.steemit.com',
+        method: 'POST',
+        body: dataString
+    }
+    request(options, function(error, response, body) {
+        processOps(error, response, body, localBlockNo);
+    });
+}
+
+module.exports.getOpsAppBase = getOpsAppBase;
 
 // Function checks whether two UTC dates are on the same day
 // ---------------------------------------------------------
