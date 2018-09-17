@@ -28,6 +28,24 @@ module.exports.checkCollectionExists = checkCollectionExists;
 
 
 
+// Extracts blockNumber for a start and end blockNumbers for analysis period from blockDates index
+// ---------------------------------------------
+// < Returns a promise > (since async function)
+async function dateToBlockNumber(localDate, localDatePlusOne, db) {
+    await db.collection('blockDates').find({timestamp: {$gte: localDate, $lt: localDatePlusOne}}).project({ timestamp: 1, blockNumber: 1, _id: 0 }).toArray()
+        .then(function(records) {
+            result = records[0].blockNumber;
+        }).catch(function(error) {
+            console.log('help', error);
+        });
+
+    return result;
+}
+
+module.exports.dateToBlockNumber = dateToBlockNumber;
+
+
+
 // Comment - processing of block operation
 // ---------------------------------------------
 function processComment(operation, mongoComment, db) {
@@ -87,8 +105,65 @@ async function reportComments(MongoClient, url, dbName) {
                 console.log(record);
             }
             console.log('closing mongo db');
+            console.log('------------------------------------------------------------------------');
+            console.log('------------------------------------------------------------------------');
             client.close();
         });
 }
 
 module.exports.reportComments = reportComments;
+
+
+// Function reports on blocks processed
+// ------------------------------------
+async function reportBlocksProcessed(db, openBlock, closeBlock, retort) {
+
+    const collection = db.collection('blocksProcessed');
+
+    if (retort == 'report') {
+
+        collection.aggregate([
+            { $match : {blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+            { $project : {_id: 0, blockNumber: 1, status: 1}},
+            { $group : {_id : {status : "$status"},
+                        count: { $sum: 1 },
+                        }},
+            ]).toArray()
+            .then(function(records) {
+                for (let record of records) {
+                    record.status = record._id.status;
+                    delete record._id;
+                    console.log(record);
+
+                }
+            console.log('closing mongo db');
+            console.log('------------------------------------------------------------------------');
+            console.log('------------------------------------------------------------------------');
+            client.close();
+        });
+    }
+
+    if (retort == 'return') {
+        let result = [];
+
+        collection
+            .find({ blockNumber: { $gte: openBlock, $lt: closeBlock }, status: 'OK'})
+            .project({ blockNumber: 1, _id: 0 })
+            .sort({blockNumber:1})
+            .toArray()
+            .then(function(records) {
+                for (let record of records) {
+                    //record.status = record._id.application;
+                    //delete record._id;
+                    //console.log(record.blockNumber);
+                    result.push(record.blockNumber)
+                }
+                console.log(result);
+                client.close();
+        });
+
+    }
+
+}
+
+module.exports.reportBlocksProcessed = reportBlocksProcessed;

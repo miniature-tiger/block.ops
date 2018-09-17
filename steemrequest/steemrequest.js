@@ -128,7 +128,10 @@ function getOpsAppBase(localBlockNo, processOps) {
         method: 'POST',
         body: dataString
     }
-    request(options, processOps);
+    request(options, function(error, response, body) {
+        processOps(error, response, body, localBlockNo);
+    });
+
 }
 
 module.exports.getOpsAppBase = getOpsAppBase;

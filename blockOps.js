@@ -1,6 +1,8 @@
 // Time reporting for measuring speed of block parsing
 // ---------------------------------------------------
 console.log('------------------------------------------------------------------------');
+console.log('------------------------------------------------------------------------');
+console.log('------------------------------------------------------------------------');
 console.log('                               Start                   ');
 const launchTime = Date.now();
 console.log('                             time = ' + (Date.now() - launchTime));
@@ -43,6 +45,8 @@ if (commandLine == 'setup') {
     fillOperations();
 } else if (commandLine == 'reportcomments') {
     mongoblock.reportComments(MongoClient, url, dbName);
+} else if (commandLine == 'reportblocks') {
+    reportBlocks();
 } else {
     // end
 }
@@ -224,9 +228,13 @@ async function fillOperations() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let checkC = await mongoblock.checkCollectionExists(db, 'comments');
-    if (checkC == false) {
+    let checkCo = await mongoblock.checkCollectionExists(db, 'comments');
+    if (checkCo == false) {
         db.collection('comments').createIndex({author: 1, permlink: 1}, {unique:true});
+    }
+    let checkCb = await mongoblock.checkCollectionExists(db, 'blocksProcessed');
+    if (checkCb == false) {
+        db.collection('blocksProcessed').createIndex({blockNumber: 1}, {unique:true});
     }
 
     let blocksStarted = 0;
@@ -236,28 +244,11 @@ async function fillOperations() {
     let blocksPerRound = 8; // x blocks called for processing at a time
     let unknownOperations = [];
 
-    openDate = new Date(parameter1);
-    openDateEnd = helperblock.forwardOneDay(openDate);
-    closeDate = openDateEnd; // short cut for one day calc - TO UPDATE WITH parameter2
-    closeDateEnd = helperblock.forwardOneDay(closeDate);
-    console.log(openDate, closeDate);
 
-    // Extracts start and end blockNumbers for analysis period from blockDates index
-    db.collection('blockDates').find({timestamp: {$gte: openDate, $lt: openDateEnd}}).project({ timestamp: 1, blockNumber: 1, _id: 0 }).toArray()
-        .then(function(records) {
-            openBlock = records[0].blockNumber;
-        }).catch(function(error) {
-            console.log(error)
-        });
-    await db.collection('blockDates').find({timestamp: {$gte: closeDate, $lt: closeDateEnd}}).project({ timestamp: 1, blockNumber: 1, _id: 0 }).toArray()
-        .then(function(records) {
-            closeBlock = records[0].blockNumber-1;
-        }).catch(function(error) {
-            console.log(error)
-        });
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    console.log(openBlock, closeBlock, parameterIssue);
 
-    blocksToProcess = closeBlock - openBlock + 1;
-    //blocksToProcess = 1200; // reduced to 1200 (1 hour for testing)
+    blocksToProcess = closeBlock - openBlock;
     console.log(openBlock, blocksToProcess);
 
     fiveBlock(openBlock);
@@ -280,16 +271,15 @@ async function fillOperations() {
 
     // Function to process block of operations
     // -----------------------------------------
-    function processOps(error, response, body) {
+    function processOps(error, response, body, localBlockNo) {
         if (!error && response.statusCode == 200) {
             try {
                 let result = JSON.parse(body).result;
-                let timestamp = result.timestamp;
-
                 for (let operation of result) {
                     // Extracts blockNumber just once for all operations
                     if (operation.trx_in_block == 0) {
                         blockProcessed = operation.block;
+                        timestamp = operation.timestamp;
                     }
                     if (operation.op[0] == 'comment') {
                         mongoblock.processComment(operation, mongoblock.mongoComment, db);
@@ -300,6 +290,12 @@ async function fillOperations() {
                         }
                     }
                 }
+                // Add record of block processed to database
+                let blockRecord = {blockNumber: blockProcessed, timestamp: timestamp, status: 'OK'};
+                db.collection('blocksProcessed').insertOne(blockRecord, (error, results) => {
+                    if(error) { if(error.code != 11000) {console.log(error);}}
+                });
+
                 blocksCompleted += 1;
                 console.log('----------------');
                 console.log('finished ' + blockProcessed + ' (' + blocksCompleted + ')' );
@@ -323,14 +319,73 @@ async function fillOperations() {
                 } else if (blocksStarted - blocksCompleted < 5) {
                     fiveBlock(openBlock + blocksStarted);
                 }
-            } catch {
-                console.log(response);
+            } catch (error) {
+                console.log(error);
             }
         } else {
             console.log('Most likely error is connection lost'); // to do: deal with checking which blocks loaded, reconnecting, and restarting loop.
+            console.log(localBlockNo);
+            let blockRecord = {blockNumber: localBlockNo, status: 'error'};
+            db.collection('blocksProcessed').insertOne(blockRecord, (error, results) => {
+                if(error) { if(error.code != 11000) {console.log(error);}}
+            });
             blocksCompleted += 1;
             errorCount += 1;
         }
     }
 // Closing fillOperations
+}
+
+
+// Function to convert parameters for a date range into blockNumbers
+// -----------------------------------------------------------------
+// Accepts two dates as parameters  or a date and a number
+// Parameters are global and defined on command line
+async function blockRangeDefinition(db) {
+
+    let openBlock = 0, closeBlock = 0, parameterIssue = false;
+
+    if (typeof parameter1 == 'string') {
+        openDate = new Date(parameter1);
+        openDateEnd = helperblock.forwardOneDay(openDate);
+        openBlock = await mongoblock.dateToBlockNumber(openDate, openDateEnd, db)
+            .catch(function(error) {
+                console.log(error);
+                parameterIssue = true;
+            });
+    } else {
+        parameterIssue = true;
+    }
+
+    if (!(isNaN(parameter2))) {
+        closeBlock = openBlock + Number(parameter2);
+    } else if (typeof parameter2 == 'string') {
+        closeDate = new Date(parameter2);
+        closeDateEnd = helperblock.forwardOneDay(closeDate);
+        closeBlock = await mongoblock.dateToBlockNumber(closeDate, closeDateEnd, db)
+            .catch(function(error) {
+                console.log(error);
+                parameterIssue = true;
+            });
+    } else {
+        parameterIssue = true;
+    }
+
+    return [openBlock, closeBlock, parameterIssue];
+}
+
+
+// Function to provide parameters for reportBlocksProcessed
+// --------------------------------------------------------
+async function reportBlocks() {
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        mongoblock.reportBlocksProcessed(db, openBlock, closeBlock, 'return');
+    } else {
+        console.log('Parameter issue');
+    }
 }
