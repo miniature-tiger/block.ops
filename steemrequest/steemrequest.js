@@ -105,12 +105,9 @@ async function checkFirstBlock(blockNo, date) {
 
     if (checkSameDay(blockRecordFirst.timestamp, date) == true && checkSameDay(forwardOneDay(blockRecordPrior.timestamp), date) == true) {
         result = {check: true, timestamp: blockRecordFirst.timestamp};
-        //console.log('passes true');
     } else {
         result = {check: false, timestamp: blockRecordFirst.timestamp};
-        //console.log('passes false');
     }
-    //console.log(result);
 
     return result;
 }
@@ -131,7 +128,6 @@ function getOpsAppBase(localBlockNo, processOps) {
     request(options, function(error, response, body) {
         processOps(error, response, body, localBlockNo);
     });
-
 }
 
 module.exports.getOpsAppBase = getOpsAppBase;

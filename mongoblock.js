@@ -3,25 +3,21 @@ const mongodb = require('mongodb');
 
 // Function checks whether a collection exists in a database
 // ---------------------------------------------------------
-// < Returns a promise >
-function checkCollectionExists(db, collectionName) {
+// < Returns a promise > (since async function)
+async function checkCollectionExists(db, collectionName) {
     let result = false;
-    return new Promise(function(resolve, reject) {
-        db.listCollections({}, {nameOnly: true}).toArray(function(error, collections) {
+    await db.listCollections({}, {nameOnly: true}).toArray()
+        .then(function(collections) {
             let collectionPosition = collections.findIndex(fI => fI.name == collectionName);
             if (collectionPosition != -1) {
                 if(collections[collectionPosition].type = 'collection') {
                     result = true;
                 }
             }
-            if (error) {
-                console.log(error);
-                reject(result);
-            } else {
-                resolve(result);
-            }
+        }).catch(function(error) {
+            console.log(error);
         });
-    });
+    return result;
 }
 
 module.exports.checkCollectionExists = checkCollectionExists;
@@ -36,9 +32,8 @@ async function dateToBlockNumber(localDate, localDatePlusOne, db) {
         .then(function(records) {
             result = records[0].blockNumber;
         }).catch(function(error) {
-            console.log('help', error);
+            console.log(error);
         });
-
     return result;
 }
 
@@ -71,9 +66,7 @@ function mongoComment(db, localRecord) {
     db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, application: {$exists : false}}, {$set: localRecord, $addToSet: {operations: 'comment'}}, {upsert: true})
         .catch(function(error) {
             if(error.code != 11000) {
-                console.log(error);
-            } else {
-                // ignore 11000 errors as there are many duplicated operations in AppBase
+                console.log(error); // ignore 11000 errors as there are many duplicated operations in AppBase
             }
         });
 }
@@ -108,7 +101,7 @@ async function reportComments(MongoClient, url, dbName) {
             console.log('------------------------------------------------------------------------');
             console.log('------------------------------------------------------------------------');
             client.close();
-        });
+        })
 }
 
 module.exports.reportComments = reportComments;
@@ -134,12 +127,13 @@ async function reportBlocksProcessed(db, openBlock, closeBlock, retort) {
                     record.status = record._id.status;
                     delete record._id;
                     console.log(record);
-
                 }
             console.log('closing mongo db');
             console.log('------------------------------------------------------------------------');
             console.log('------------------------------------------------------------------------');
             client.close();
+        }).catch(function(error) {
+            console.log(error);
         });
     }
 
@@ -153,17 +147,13 @@ async function reportBlocksProcessed(db, openBlock, closeBlock, retort) {
             .toArray()
             .then(function(records) {
                 for (let record of records) {
-                    //record.status = record._id.application;
-                    //delete record._id;
-                    //console.log(record.blockNumber);
                     result.push(record.blockNumber)
                 }
-                console.log(result);
                 client.close();
-        });
-
+            }).catch(function(error) {
+                console.log(error);
+            });
     }
-
 }
 
 module.exports.reportBlocksProcessed = reportBlocksProcessed;

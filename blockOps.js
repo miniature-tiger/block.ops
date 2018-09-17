@@ -272,7 +272,7 @@ async function fillOperations() {
     // Function to process block of operations
     // -----------------------------------------
     function processOps(error, response, body, localBlockNo) {
-        if (!error && response.statusCode == 200) {
+        if (!error) {
             try {
                 let result = JSON.parse(body).result;
                 for (let operation of result) {
@@ -323,8 +323,12 @@ async function fillOperations() {
                 console.log(error);
             }
         } else {
-            console.log('Most likely error is connection lost'); // to do: deal with checking which blocks loaded, reconnecting, and restarting loop.
-            console.log(localBlockNo);
+            console.log('Error in processing block:', localBlockNo);
+            if (error.errno = 'ENOTFOUND') {
+                console.log('ENOTFOUND: Most likely error is connection lost.'); // to do: deal with checking which blocks loaded, reconnecting, and restarting loop.
+            } else {
+                console.log(error);
+            }
             let blockRecord = {blockNumber: localBlockNo, status: 'error'};
             db.collection('blocksProcessed').insertOne(blockRecord, (error, results) => {
                 if(error) { if(error.code != 11000) {console.log(error);}}
@@ -384,7 +388,7 @@ async function reportBlocks() {
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
-        mongoblock.reportBlocksProcessed(db, openBlock, closeBlock, 'return');
+        await mongoblock.reportBlocksProcessed(db, openBlock, closeBlock, 'report');
     } else {
         console.log('Parameter issue');
     }
