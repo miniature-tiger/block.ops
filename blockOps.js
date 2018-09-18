@@ -64,7 +64,7 @@ async function updateBlockDates() {
     let latestB = await steemrequest.getLatestBlockNumber();
     console.log('Latest block:', latestB.blockNumber, latestB.timestamp);
 
-    let loopBlock = 1, loopDate = new Date(), loopStartSet = false, record = {};
+    let loopBlock = 1, loopDate = new Date(), loopStartSet = false, record = {}, secondsPerBlock = 3;
 
     // Checks whether blockDates have previously been loaded
     // If true uses most recent blockDate as starting point for loading further blockDates
@@ -75,9 +75,10 @@ async function updateBlockDates() {
             .then(function(maxDate) {
                 if(maxDate.length == 1) {
                     console.log('Latest blockdate loaded:', maxDate[0].blockNumber, maxDate[0].timestamp);
-                    loopBlock = maxDate[0].blockNumber + (24*60*20);
+                    loopBlock = Math.min(maxDate[0].blockNumber + (24*60*20), latestB.blockNumber);
                     loopDate = helperblock.forwardOneDay(maxDate[0].timestamp);
                     loopStartSet = true;
+                    console.log('Attempted block:', loopBlock, loopDate);
                 }
             }).catch(function(error) {
                 console.log(error)
@@ -99,7 +100,7 @@ async function updateBlockDates() {
         console.log('block 1 - logged on db:')
         // go forward one day
         loopDate = helperblock.forwardOneDay(loopDate);
-        loopBlock = loopBlock - helperblock.blocksToMidnight(startB.timestamp, loopDate);
+        loopBlock = loopBlock - helperblock.blocksToMidnight(startB.timestamp, loopDate, 3);
 
         collection.createIndex({timestamp: 1}, {unique:true})
             .catch(function(error) {
@@ -127,18 +128,22 @@ async function updateBlockDates() {
             loopBlock = loopBlock + (24*60*20);
             loopDate = helperblock.forwardOneDay(loopDate);
             counter = 0, attemptArray = [];
+            secondsPerBlock = 3;
         // If block is not first block revise estimate of first blockNumber based on 3 second blocks
         } else {
             console.log('...recalculating');
             counter += 1;
-            attemptArray.push(loopBlock);
+            attemptArray.push({blockNumber: loopBlock, timestamp: firstB.timestamp});
             // Workaround for when estimation process gets stuck
             if (counter % 5 == 0) {
-                loopBlock = Math.round((attemptArray[attemptArray.length-1] + attemptArray[attemptArray.length-2])/2);
-                console.log('moving to average of last two block numbers');
+                console.log(attemptArray);
+                secondsPerBlock = Math.round((attemptArray[attemptArray.length-1].timestamp - attemptArray[attemptArray.length-2].timestamp) / (attemptArray[attemptArray.length-1].blockNumber - attemptArray[attemptArray.length-2].blockNumber)/1000);
+                //console.log( (attemptArray[attemptArray.length-1].timestamp - attemptArray[attemptArray.length-2].timestamp) , (attemptArray[attemptArray.length-1].blockNumber - attemptArray[attemptArray.length-2].blockNumber) , secondsPerBlock );
+                console.log('adjusting seconds per block to ' + secondsPerBlock + ' seconds due to large number of missing blocks. Resets once first block found.');
+                loopBlock = Math.min(loopBlock - helperblock.blocksToMidnight(firstB.timestamp, loopDate, secondsPerBlock), latestB.blockNumber);
             // blocksToMidnight revises estimate based on 3 second blocks
             } else {
-                loopBlock = loopBlock - helperblock.blocksToMidnight(firstB.timestamp, loopDate);
+                loopBlock = Math.min(loopBlock - helperblock.blocksToMidnight(firstB.timestamp, loopDate, secondsPerBlock), latestB.blockNumber);
             }
         }
         console.log('----------------');
@@ -173,10 +178,10 @@ async function removeCollection() {
 // ----------------------------------------------------------
 async function checkAllBlockDates() {
     // Opening MongoDB
-    client = await MongoClient.connect(url, { useNewUrlParser: true });
-    console.log('Connected to server.');
+    client = await MongoClient.connect(url, { useNewUrlParser: true })
     const db = client.db(dbName);
     const collection = db.collection('blockDates');
+    console.log('Connected to server.');
 
     // Gets first and last dates to check
     let latestB = await steemrequest.getLatestBlockNumber();
@@ -283,6 +288,12 @@ async function fillOperations() {
                     }
                     if (operation.op[0] == 'comment') {
                         mongoblock.processComment(operation, mongoblock.mongoComment, db);
+                    } else if (operation.op[0] == 'author_reward') {
+                        mongoblock.processAuthorReward(operation, mongoblock.mongoAuthorReward, db);
+                    } else if (operation.op[0] == 'comment_benefactor_reward') {
+                        mongoblock.processBenefactorReward(operation, mongoblock.mongoBenefactorReward, db);
+                    } else if (operation.op[0] == 'curation_reward') {
+                        mongoblock.processCuratorReward(operation, mongoblock.mongoCuratorReward, db);
                     } else {
                         // Operations not handled:
                         if (!unknownOperations.includes(operation.op[0])) {

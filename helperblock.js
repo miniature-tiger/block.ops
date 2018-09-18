@@ -34,9 +34,9 @@ module.exports.forwardOneDay = forwardOneDay;
 
 // Function calculates the number of 3 second blocks between the firstDate and Midnight of the secondDate
 // ------------------------------------------------------------------------------------------------------
-function blocksToMidnight(firstDate, secondDate) {
+function blocksToMidnight(firstDate, secondDate, secondsPerBlock) {
     let secondDateMidnight = new Date(Date.UTC(secondDate.getUTCFullYear(), secondDate.getUTCMonth(), secondDate.getUTCDate()));
-    let result = Math.round((firstDate - secondDateMidnight)/1000/3);
+    let result = Math.round((firstDate - secondDateMidnight)/1000/secondsPerBlock);
     return result;
 }
 
