@@ -11,7 +11,7 @@ Block.Ops requires Node.js, npm, and MongoDB. If you do not already have these p
 Production testing used Node.js v10.9.0 (this 'Latest Features' version is required) and MongoDB version v4.0.0. Run on macOS High Sierra.
 
 ### Block.Ops files
-* Download all files to your local computer using the "Clone of download" ---> "Download ZIP" buttons on the block.ops repository of github.
+* Download all files to your local computer using the "Clone of download" ---> "Download ZIP" buttons on the block.ops repository of github. **[PLEASE USE THE LATEST FORK WHICH INCLUDES A PATCH FOLLOWING THE HF20 ISSUES YESTERDAY]
 * Move the downloaded files to the directory of your choice.
 
 ### npm module installations
