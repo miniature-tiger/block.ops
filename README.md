@@ -33,18 +33,24 @@ Block.Ops is run with node.js via the command line.
 Once the blocknumber index has been created the following commands can be used for Block.Ops functionality:
 $ node blockOps ...
 
-* filloperations <date> <date or number of blocks> 
+* filloperations < date > < date or number of blocks > 
+
   e.g. $ node blockOps filloperations "2018-09-03" 10
-  Runs through loop of blocks (starting from first block of first date parameter) to analyse operations and add to MongoDB
+
+Runs through loop of blocks (starting from first block of first date parameter) to analyse operations and add to MongoDB
   
-* reportblocks <date> <date or number of blocks> 
+* reportblocks < date > < date or number of blocks > 
+  
   e.g. $ node blockOps reportblocks "2018-09-02" 1200
+  
   Reports on status of blocks processed for date range 
   
 * reportcomments  
+  
   Reports on post numbers per application (currently for all blocks processed)
   
-* remove <nameOfCollectionToRemove>
+* remove < nameOfCollectionToRemove >
+  
   Removes all records from a collection (handle with care!)
 
 ----------------------------------------------
