@@ -29,6 +29,7 @@ const dbName = 'blockOps';
 let commandLine = process.argv.slice(2)[0];
 let parameter1 = process.argv.slice(2)[1];
 let parameter2 = process.argv.slice(2)[2];
+let parameter3 = process.argv.slice(2)[3];
 console.log('command: ', commandLine, '| | parameter1: ',parameter1, '| | parameter2: ', parameter2);
 console.log('------------------------------------------------------------------------');
 
@@ -47,6 +48,8 @@ if (commandLine == 'setup') {
     mongoblock.reportComments(MongoClient, url, dbName);
 } else if (commandLine == 'reportblocks') {
     reportBlocks();
+} else if (commandLine == 'findcomments') {
+    findComments();
 } else {
     // end
 }
@@ -248,7 +251,10 @@ async function fillOperations() {
     let blocksToProcess = 0;
     let blocksPerRound = 8; // x blocks called for processing at a time
     let unknownOperations = [];
-
+    let blockProcessNumber = 1000;
+    let priorArrayCount = 0;
+    let blocksOK = 0;
+    let blockProcessArray = [];
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     console.log(openBlock, closeBlock, parameterIssue);
@@ -256,21 +262,38 @@ async function fillOperations() {
     blocksToProcess = closeBlock - openBlock;
     console.log(openBlock, blocksToProcess);
 
-    fiveBlock(openBlock);
+    fiveBlock();
 
     // Function to extract data of x blocks from the blockchain (originally five blocks)
     // ---------------------------------------------------------------------------------
-    function fiveBlock(localOpenBlock) {
-        let launchBlocks = Math.min(blocksPerRound, blocksToProcess - blocksStarted)
-        console.log(launchBlocks, blocksToProcess - blocksStarted);
+    async function fiveBlock() {
+
+        let launchBlocks = Math.min(blocksPerRound, blocksToProcess - blocksStarted - blocksOK);
+        console.log(launchBlocks, blocksToProcess - blocksStarted - blocksOK);
         for (var i = 0; i < launchBlocks; i+=1) {
-            blockNo = localOpenBlock + i;
-            console.log('----------------');
-            console.log('started ' + blockNo);
-            // Gets data for one block, processes it in callback "processOps"
-            steemrequest.getOpsAppBase(blockNo, processOps);
-            blocksStarted += 1;
-            console.log('----------------');
+            if(blocksStarted - priorArrayCount == blockProcessArray.length) {
+                do {
+                    priorArrayCount += blockProcessArray.length;
+                    blockProcessArray = await mongoblock.reportBlocksProcessed(db, openBlock + priorArrayCount + blocksOK, Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock), 'return');
+                    console.log('array called', openBlock + priorArrayCount + blocksOK, Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock)-1);
+                    blocksOK += ( Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock) - (openBlock + priorArrayCount + blocksOK) - blockProcessArray.length);
+                    console.log('blocksOK', blocksOK);
+                }
+                while (blockProcessArray.length == 0 && (blocksStarted + blocksOK < blocksToProcess));
+            }
+            if (blocksStarted + blocksOK < blocksToProcess) {
+                blockNo = blockProcessArray[blocksStarted - priorArrayCount];
+                console.log('----------------');
+                console.log('started ' + blockNo);
+                // Gets data for one block, processes it in callback "processOps"
+                steemrequest.getOpsAppBase(blockNo, processOps);
+                blocksStarted += 1;
+                console.log('----------------');
+            } else {
+                console.log('break');
+                completeOperationsLoop()
+                break;
+            }
         }
     }
 
@@ -281,11 +304,10 @@ async function fillOperations() {
             try {
                 let result = JSON.parse(body).result;
                 for (let operation of result) {
-                    // Extracts blockNumber just once for all operations
-                    if (operation.trx_in_block == 0) {
-                        blockProcessed = operation.block;
-                        timestamp = operation.timestamp;
-                    }
+                    // Extracts blockNumber and timestamp
+                    blockProcessed = operation.block;
+                    timestamp = operation.timestamp;
+
                     if (operation.op[0] == 'comment') {
                         mongoblock.processComment(operation, mongoblock.mongoComment, db);
                     } else if (operation.op[0] == 'author_reward') {
@@ -303,7 +325,8 @@ async function fillOperations() {
                 }
                 // Add record of block processed to database
                 let blockRecord = {blockNumber: blockProcessed, timestamp: timestamp, status: 'OK'};
-                db.collection('blocksProcessed').insertOne(blockRecord, (error, results) => {
+                console.log('adding block ', blockProcessed);
+                db.collection('blocksProcessed').updateOne({ blockNumber: blockProcessed, status: {$ne : 'OK'}}, {$set: blockRecord}, {upsert: true}, (error, results) => { // Is this slowing the loop? To do - test it.
                     if(error) { if(error.code != 11000) {console.log(error);}}
                 });
 
@@ -312,23 +335,11 @@ async function fillOperations() {
                 console.log('finished ' + blockProcessed + ' (' + blocksCompleted + ')' );
                 console.log('----------------');
 
-                if (blocksCompleted == blocksToProcess) {
-                    let runTime = Date.now() - launchTime;
-                    console.log('unknownOperations: ', unknownOperations);
-                    console.log('End time: ' + (Date.now() - launchTime));
-                    console.log('----------------');
-                    console.log('REPORT');
-                    console.log('Start date: ', openDate);
-                    console.log('Blocks covered: ', openBlock + ' to ' + closeBlock);
-                    console.log('Blocks processed: ' + blocksCompleted);
-                    console.log('Error Count: ' + errorCount);
-                    console.log('Average speed: ' + (runTime/blocksCompleted/1000).toFixed(4) + 's.');
-                    console.log('db closing');
-                    //mclient.close();
-
+                if (blocksCompleted  + blocksOK == blocksToProcess) {
+                    completeOperationsLoop();
 
                 } else if (blocksStarted - blocksCompleted < 5) {
-                    fiveBlock(openBlock + blocksStarted);
+                    fiveBlock();
                 }
             } catch (error) {
                 console.log(error);
@@ -348,6 +359,23 @@ async function fillOperations() {
             errorCount += 1;
         }
     }
+
+    function completeOperationsLoop() {
+        let runTime = Date.now() - launchTime;
+        console.log('unknownOperations: ', unknownOperations);
+        console.log('End time: ' + (Date.now() - launchTime));
+        console.log('----------------');
+        console.log('REPORT');
+        console.log('Start date: ', openDate);
+        console.log('Blocks covered: ', openBlock + ' to ' + closeBlock);
+        console.log('Blocks processed: ' + blocksCompleted);
+        console.log('Blocks previously processed: ' + blocksOK);
+        console.log('Error Count: ' + errorCount);
+        console.log('Average speed: ' + (runTime/blocksCompleted/1000).toFixed(4) + 's.');
+        //console.log('db closing');
+        //client.close();
+    }
+
 // Closing fillOperations
 }
 
@@ -400,6 +428,23 @@ async function reportBlocks() {
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
         await mongoblock.reportBlocksProcessed(db, openBlock, closeBlock, 'report');
+    } else {
+        console.log('Parameter issue');
+    }
+}
+
+
+
+// Function to provide parameters for findCommentsMongo
+// ----------------------------------------------------
+async function findComments() {
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        await mongoblock.findCommentsMongo(parameter3, db, openBlock, closeBlock);
     } else {
         console.log('Parameter issue');
     }

@@ -200,11 +200,9 @@ module.exports.reportComments = reportComments;
 // ------------------------------------
 async function reportBlocksProcessed(db, openBlock, closeBlock, retort) {
 
-    const collection = db.collection('blocksProcessed');
-
     if (retort == 'report') {
 
-        collection.aggregate([
+        db.collection('blocksProcessed').aggregate([
             { $match : {blockNumber: { $gte: openBlock, $lt: closeBlock }}},
             { $project : {_id: 0, blockNumber: 1, status: 1}},
             { $group : {_id : {status : "$status"},
@@ -227,22 +225,69 @@ async function reportBlocksProcessed(db, openBlock, closeBlock, retort) {
     }
 
     if (retort == 'return') {
-        let result = [];
 
-        collection
+    let okArray = [], result = [];
+
+        await db.collection('blocksProcessed')
             .find({ blockNumber: { $gte: openBlock, $lt: closeBlock }, status: 'OK'})
             .project({ blockNumber: 1, _id: 0 })
             .sort({blockNumber:1})
             .toArray()
             .then(function(records) {
                 for (let record of records) {
-                    result.push(record.blockNumber)
+                    okArray.push(record.blockNumber)
                 }
-                client.close();
             }).catch(function(error) {
                 console.log(error);
             });
+
+        let j = 0;
+        for (var i = openBlock; i < closeBlock; i+=1) {
+            if (j == okArray.length || i != okArray[j]) {
+                result.push(i);
+            } else {
+                j+=1;
+            }
+        }
+        console.log('okArray');
+        if (okArray.length == 0) {
+            console.log('0 ok blocks');
+        } else {
+            console.log(okArray[0], okArray[okArray.length-1], okArray.length);
+        }
+        console.log('result');
+        if (result.length == 0) {
+            console.log('0 blocks to process');
+        } else {
+            console.log(result[0], result[result.length-1], result.length);
+        }
+
+        return result;
     }
+
 }
 
 module.exports.reportBlocksProcessed = reportBlocksProcessed;
+
+
+
+// Function lists comments for an application to give an idea of comment structure
+// -------------------------------------------------------------------------------
+function findCommentsMongo(localApp, db, openBlock, closeBlock) {
+    db.collection('comments').find(
+        {$and : [
+            { blockNumber: { $gte: openBlock, $lt: closeBlock }},
+            { application: localApp }
+        ]}).sort({author:1}).toArray()
+        .then(function(details) {
+            for (let comment of details) {
+                console.log(comment);
+            }
+            client.close();
+        })
+        .catch(function(error) {
+            console.log(error);
+        });
+}
+
+module.exports.findCommentsMongo = findCommentsMongo;
