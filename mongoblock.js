@@ -78,7 +78,7 @@ module.exports.mongoComment = mongoComment;
 // Author Reward - processing of block operation
 // ---------------------------------------------
 function processAuthorReward(operation, mongoAuthorReward, db) {
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, author_payout: {sbd: Number(operation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(operation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(operation.op[1].vesting_payout.split(' ', 1)[0])}};
+    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, author_payout: {sbd: Number(operation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(operation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(operation.op[1].vesting_payout.split(' ', 1)[0])}, author_payout_timestamp: operation.timestamp };
     mongoAuthorReward(db, record);
 }
 
@@ -105,7 +105,7 @@ module.exports.mongoAuthorReward = mongoAuthorReward;
 // Benefactor Reward - processing of block operation
 // -------------------------------------------------
 function processBenefactorReward(operation, mongoBenefactorReward, db) {
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, benefactor: operation.op[1].benefactor, benefactor_payout: {vests: Number(operation.op[1].reward.split(' ', 1)[0])}};
+    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, benefactor: operation.op[1].benefactor, benefactor_timestamp: operation.timestamp, benefactor_payout: {vests: Number(operation.op[1].reward.split(' ', 1)[0])}};
     mongoBenefactorReward(db, record);
 }
 
@@ -117,7 +117,7 @@ module.exports.processBenefactorReward = processBenefactorReward;
 // -----------------------------------------------
 function mongoBenefactorReward(db, localRecord) {
     // Uses upsert - blocks may be processed in any order so author/permlink record may already exist if another operation is processed first
-    db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, "benefactors.user": {$ne: localRecord.benefactor}}, {$inc: {"benefactor_payout.vests": localRecord.benefactor_payout.vests}, $addToSet: {operations: 'benefactor_payout', benefactors: {user: localRecord.benefactor, vests: localRecord.benefactor_payout.vests}}}, {upsert: true})
+    db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, "benefactors.user": {$ne: localRecord.benefactor}}, {$inc: {"benefactor_payout.vests": localRecord.benefactor_payout.vests}, $addToSet: {operations: 'benefactor_payout', benefactors: {user: localRecord.benefactor, vests: localRecord.benefactor_payout.vests, timestamp: localRecord.benefactor_timestamp}}}, {upsert: true})
         .catch(function(error) {
             if(error.code != 11000) {
                 console.log(error); // ignore 11000 errors as there are many duplicated operations in AppBase
@@ -132,7 +132,7 @@ module.exports.mongoBenefactorReward = mongoBenefactorReward;
 // Curator Reward - processing of block operation
 // -------------------------------------------------
 function processCuratorReward(operation, mongoCuratorReward, db) {
-    let record = {author: operation.op[1].comment_author, permlink: operation.op[1].comment_permlink, curator: operation.op[1].curator, curator_payout: {vests: Number(operation.op[1].reward.split(' ', 1)[0])}};
+    let record = {author: operation.op[1].comment_author, permlink: operation.op[1].comment_permlink, curator: operation.op[1].curator, curator_timestamp: operation.timestamp, curator_payout: {vests: Number(operation.op[1].reward.split(' ', 1)[0])}};
     mongoCuratorReward(db, record);
 }
 
@@ -144,7 +144,7 @@ module.exports.processCuratorReward = processCuratorReward;
 // -----------------------------------------------
 function mongoCuratorReward(db, localRecord) {
     // Uses upsert - blocks may be processed in any order so author/permlink record may already exist if another operation is processed first
-    db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, "curators.user": {$ne: localRecord.curator}}, {$inc: {"curator_payout.vests": localRecord.curator_payout.vests}, $addToSet: {operations: 'curator_payout', curators: {user: localRecord.curator, vests: localRecord.curator_payout.vests}}}, {upsert: true})
+    db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, "curators.user": {$ne: localRecord.curator}}, {$inc: {"curator_payout.vests": localRecord.curator_payout.vests}, $addToSet: {operations: 'curator_payout', curators: {user: localRecord.curator, vests: localRecord.curator_payout.vests, timestamp: localRecord.curator_timestamp}}}, {upsert: true})
         .catch(function(error) {
             if(error.code != 11000) {
                 console.log(error); // ignore 11000 errors as there are many duplicated operations in AppBase
@@ -198,7 +198,7 @@ module.exports.reportCommentsMongoOld = reportCommentsMongoOld;
 // ------------------------------------------
 // Note that payments are in relation to comments made in the date range - not payments made within the date range
 async function reportCommentsMongo(db, openBlock, closeBlock) {
-    db.collection('comments').aggregate([
+    return db.collection('comments').aggregate([
             { $match :  {$and :[{operations: 'comment'},
                         {blockNumber: { $gte: openBlock, $lt: closeBlock }}]} },
             { $project : {_id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1}},
@@ -220,23 +220,8 @@ async function reportCommentsMongo(db, openBlock, closeBlock) {
                         curator_payout_vests: {$sum: "$curator_payout_vests"}
                         }},
             { $sort : {authors:-1}}
-        ]).toArray()
-        .then(function(records) {
-            for (let record of records) {
-                record.application = record._id.application;
-                delete record._id;
-                record.author_payout_sbd = Number(record.author_payout_sbd.toFixed(3));
-                record.author_payout_steem = Number(record.author_payout_steem.toFixed(3));
-                record.author_payout_vests = Number(record.author_payout_vests.toFixed(6));
-                record.benefactor_payout_vests = Number(record.benefactor_payout_vests.toFixed(6));
-                record.curator_payout_vests = Number(record.curator_payout_vests.toFixed(6));
-                console.log(record);
-            }
-            console.log('');
-            console.log('closing mongo db');
-            console.log('------------------------------------------------------------------------');
-            console.log('------------------------------------------------------------------------');
-            client.close();
+        ]).toArray().catch(function(error) {
+            console.log(error);
         });
 }
 
@@ -340,3 +325,45 @@ function findCommentsMongo(localApp, db, openBlock, closeBlock) {
 }
 
 module.exports.findCommentsMongo = findCommentsMongo;
+
+
+
+// Investigation Mongo
+// -------------------------------------------------------------------------------
+function investigationMongo(db, openBlock, closeBlock) {
+    db.collection('comments').find(
+        {$and : [
+            { blockNumber: { $gte: openBlock, $lt: closeBlock }},
+            { curators: {$exists : true}},
+        ]}).sort({author:1}).toArray()
+        .then(function(details) {
+            let i = 0, counter = 0, max = 0;
+            console.log(details.length + ' records')
+            for (let comment of details) {
+                //if (i < 10) {
+                  //console.log(comment);
+                for (let indiv of comment.curators) {
+                    let differential = (new Date(indiv.timestamp) - new Date(comment.timestamp)) - (7*24*60*60*1000);
+                    if (differential != 0) {
+                        console.log(differential);
+                        console.log(comment);
+                    } else {
+                        counter +=1;
+                    }
+                    if (comment.curators.length > max && comment.curators.length > 10) {
+                        console.log(comment);
+                        max = comment.curators.length
+                    }
+                //}
+                //i += 1;
+              }
+            }
+            console.log('counter', counter);
+            client.close();
+        })
+        .catch(function(error) {
+            console.log(error);
+        });
+}
+
+module.exports.investigationMongo = investigationMongo;

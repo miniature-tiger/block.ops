@@ -15,6 +15,7 @@ const mongodb = require('mongodb');
 const steemrequest = require('./steemrequest/steemrequest.js')
 const mongoblock = require('./mongoblock.js')
 const helperblock = require('./helperblock.js')
+const postprocessing = require('./postprocessing.js')
 
 
 // MongoDB
@@ -50,6 +51,8 @@ if (commandLine == 'setup') {
     reportBlocks();
 } else if (commandLine == 'findcomments') {
     findComments();
+} else if (commandLine == 'investigation') {
+    investigation();
 } else {
     // end
 }
@@ -342,6 +345,7 @@ async function fillOperations() {
                     fiveBlock();
                 }
             } catch (error) {
+                console.log('blockNumber:', localBlockNo);
                 console.log(error);
             }
         } else {
@@ -459,8 +463,34 @@ async function reportComments() {
     const db = client.db(dbName);
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+
     if (parameterIssue == false) {
-        await mongoblock.reportCommentsMongo(db, openBlock, closeBlock);
+        let marketShareSummary = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock);
+        let exportData = postprocessing.marketShareProcessing(marketShareSummary);
+        const fieldNames = ['application', 'authors', 'authorsRank', 'posts', 'postsRank', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_vests', 'curator_payout_vests'];
+        postprocessing.dataExport(exportData.slice(0), 'marketShareTest', fieldNames);
+        console.log('');
+        console.log('closing mongo db');
+        console.log('------------------------------------------------------------------------');
+        console.log('------------------------------------------------------------------------');
+        client.close();
+    } else {
+        console.log('Parameter issue');
+    }
+}
+
+
+
+// Investigation
+// -------------
+async function investigation() {
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        await mongoblock.investigationMongo(db, openBlock, closeBlock);
     } else {
         console.log('Parameter issue');
     }
