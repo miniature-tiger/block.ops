@@ -15,6 +15,7 @@ const mongodb = require('mongodb');
 const steemrequest = require('./steemrequest/steemrequest.js')
 const mongoblock = require('./mongoblock.js')
 const helperblock = require('./helperblock.js')
+const postprocessing = require('./postprocessing.js')
 
 
 // MongoDB
@@ -29,6 +30,7 @@ const dbName = 'blockOps';
 let commandLine = process.argv.slice(2)[0];
 let parameter1 = process.argv.slice(2)[1];
 let parameter2 = process.argv.slice(2)[2];
+let parameter3 = process.argv.slice(2)[3];
 console.log('command: ', commandLine, '| | parameter1: ',parameter1, '| | parameter2: ', parameter2);
 console.log('------------------------------------------------------------------------');
 
@@ -44,9 +46,13 @@ if (commandLine == 'setup') {
 } else if (commandLine == 'filloperations') {
     fillOperations();
 } else if (commandLine == 'reportcomments') {
-    mongoblock.reportComments(MongoClient, url, dbName);
+    reportComments();
 } else if (commandLine == 'reportblocks') {
     reportBlocks();
+} else if (commandLine == 'findcomments') {
+    findComments();
+} else if (commandLine == 'investigation') {
+    investigation();
 } else {
     // end
 }
@@ -64,7 +70,7 @@ async function updateBlockDates() {
     let latestB = await steemrequest.getLatestBlockNumber();
     console.log('Latest block:', latestB.blockNumber, latestB.timestamp);
 
-    let loopBlock = 1, loopDate = new Date(), loopStartSet = false, record = {};
+    let loopBlock = 1, loopDate = new Date(), loopStartSet = false, record = {}, secondsPerBlock = 3;
 
     // Checks whether blockDates have previously been loaded
     // If true uses most recent blockDate as starting point for loading further blockDates
@@ -75,9 +81,10 @@ async function updateBlockDates() {
             .then(function(maxDate) {
                 if(maxDate.length == 1) {
                     console.log('Latest blockdate loaded:', maxDate[0].blockNumber, maxDate[0].timestamp);
-                    loopBlock = maxDate[0].blockNumber + (24*60*20);
+                    loopBlock = Math.min(maxDate[0].blockNumber + (24*60*20), latestB.blockNumber);
                     loopDate = helperblock.forwardOneDay(maxDate[0].timestamp);
                     loopStartSet = true;
+                    console.log('Attempted block:', loopBlock, loopDate);
                 }
             }).catch(function(error) {
                 console.log(error)
@@ -99,7 +106,7 @@ async function updateBlockDates() {
         console.log('block 1 - logged on db:')
         // go forward one day
         loopDate = helperblock.forwardOneDay(loopDate);
-        loopBlock = loopBlock - helperblock.blocksToMidnight(startB.timestamp, loopDate);
+        loopBlock = loopBlock - helperblock.blocksToMidnight(startB.timestamp, loopDate, 3);
 
         collection.createIndex({timestamp: 1}, {unique:true})
             .catch(function(error) {
@@ -127,18 +134,22 @@ async function updateBlockDates() {
             loopBlock = loopBlock + (24*60*20);
             loopDate = helperblock.forwardOneDay(loopDate);
             counter = 0, attemptArray = [];
+            secondsPerBlock = 3;
         // If block is not first block revise estimate of first blockNumber based on 3 second blocks
         } else {
             console.log('...recalculating');
             counter += 1;
-            attemptArray.push(loopBlock);
+            attemptArray.push({blockNumber: loopBlock, timestamp: firstB.timestamp});
             // Workaround for when estimation process gets stuck
             if (counter % 5 == 0) {
-                loopBlock = Math.round((attemptArray[attemptArray.length-1] + attemptArray[attemptArray.length-2])/2);
-                console.log('moving to average of last two block numbers');
+                console.log(attemptArray);
+                secondsPerBlock = Math.round((attemptArray[attemptArray.length-1].timestamp - attemptArray[attemptArray.length-2].timestamp) / (attemptArray[attemptArray.length-1].blockNumber - attemptArray[attemptArray.length-2].blockNumber)/1000);
+                //console.log( (attemptArray[attemptArray.length-1].timestamp - attemptArray[attemptArray.length-2].timestamp) , (attemptArray[attemptArray.length-1].blockNumber - attemptArray[attemptArray.length-2].blockNumber) , secondsPerBlock );
+                console.log('adjusting seconds per block to ' + secondsPerBlock + ' seconds due to large number of missing blocks. Resets once first block found.');
+                loopBlock = Math.min(loopBlock - helperblock.blocksToMidnight(firstB.timestamp, loopDate, secondsPerBlock), latestB.blockNumber);
             // blocksToMidnight revises estimate based on 3 second blocks
             } else {
-                loopBlock = loopBlock - helperblock.blocksToMidnight(firstB.timestamp, loopDate);
+                loopBlock = Math.min(loopBlock - helperblock.blocksToMidnight(firstB.timestamp, loopDate, secondsPerBlock), latestB.blockNumber);
             }
         }
         console.log('----------------');
@@ -173,10 +184,10 @@ async function removeCollection() {
 // ----------------------------------------------------------
 async function checkAllBlockDates() {
     // Opening MongoDB
-    client = await MongoClient.connect(url, { useNewUrlParser: true });
-    console.log('Connected to server.');
+    client = await MongoClient.connect(url, { useNewUrlParser: true })
     const db = client.db(dbName);
     const collection = db.collection('blockDates');
+    console.log('Connected to server.');
 
     // Gets first and last dates to check
     let latestB = await steemrequest.getLatestBlockNumber();
@@ -243,7 +254,10 @@ async function fillOperations() {
     let blocksToProcess = 0;
     let blocksPerRound = 8; // x blocks called for processing at a time
     let unknownOperations = [];
-
+    let blockProcessNumber = 1000;
+    let priorArrayCount = 0;
+    let blocksOK = 0;
+    let blockProcessArray = [];
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     console.log(openBlock, closeBlock, parameterIssue);
@@ -251,21 +265,38 @@ async function fillOperations() {
     blocksToProcess = closeBlock - openBlock;
     console.log(openBlock, blocksToProcess);
 
-    fiveBlock(openBlock);
+    fiveBlock();
 
     // Function to extract data of x blocks from the blockchain (originally five blocks)
     // ---------------------------------------------------------------------------------
-    function fiveBlock(localOpenBlock) {
-        let launchBlocks = Math.min(blocksPerRound, blocksToProcess - blocksStarted)
-        console.log(launchBlocks, blocksToProcess - blocksStarted);
+    async function fiveBlock() {
+
+        let launchBlocks = Math.min(blocksPerRound, blocksToProcess - blocksStarted - blocksOK);
+        console.log(launchBlocks, blocksToProcess - blocksStarted - blocksOK);
         for (var i = 0; i < launchBlocks; i+=1) {
-            blockNo = localOpenBlock + i;
-            console.log('----------------');
-            console.log('started ' + blockNo);
-            // Gets data for one block, processes it in callback "processOps"
-            steemrequest.getOpsAppBase(blockNo, processOps);
-            blocksStarted += 1;
-            console.log('----------------');
+            if(blocksStarted - priorArrayCount == blockProcessArray.length) {
+                do {
+                    priorArrayCount += blockProcessArray.length;
+                    blockProcessArray = await mongoblock.reportBlocksProcessed(db, openBlock + priorArrayCount + blocksOK, Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock), 'return');
+                    console.log('array called', openBlock + priorArrayCount + blocksOK, Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock)-1);
+                    blocksOK += ( Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock) - (openBlock + priorArrayCount + blocksOK) - blockProcessArray.length);
+                    console.log('blocksOK', blocksOK);
+                }
+                while (blockProcessArray.length == 0 && (blocksStarted + blocksOK < blocksToProcess));
+            }
+            if (blocksStarted + blocksOK < blocksToProcess) {
+                blockNo = blockProcessArray[blocksStarted - priorArrayCount];
+                console.log('----------------');
+                console.log('started ' + blockNo);
+                // Gets data for one block, processes it in callback "processOps"
+                steemrequest.getOpsAppBase(blockNo, processOps);
+                blocksStarted += 1;
+                console.log('----------------');
+            } else {
+                console.log('break');
+                completeOperationsLoop()
+                break;
+            }
         }
     }
 
@@ -276,13 +307,18 @@ async function fillOperations() {
             try {
                 let result = JSON.parse(body).result;
                 for (let operation of result) {
-                    // Extracts blockNumber just once for all operations
-                    if (operation.trx_in_block == 0) {
-                        blockProcessed = operation.block;
-                        timestamp = operation.timestamp;
-                    }
+                    // Extracts blockNumber and timestamp
+                    blockProcessed = operation.block;
+                    timestamp = operation.timestamp;
+
                     if (operation.op[0] == 'comment') {
                         mongoblock.processComment(operation, mongoblock.mongoComment, db);
+                    } else if (operation.op[0] == 'author_reward') {
+                        mongoblock.processAuthorReward(operation, mongoblock.mongoAuthorReward, db);
+                    } else if (operation.op[0] == 'comment_benefactor_reward') {
+                        mongoblock.processBenefactorReward(operation, mongoblock.mongoBenefactorReward, db);
+                    } else if (operation.op[0] == 'curation_reward') {
+                        mongoblock.processCuratorReward(operation, mongoblock.mongoCuratorReward, db);
                     } else {
                         // Operations not handled:
                         if (!unknownOperations.includes(operation.op[0])) {
@@ -292,7 +328,8 @@ async function fillOperations() {
                 }
                 // Add record of block processed to database
                 let blockRecord = {blockNumber: blockProcessed, timestamp: timestamp, status: 'OK'};
-                db.collection('blocksProcessed').insertOne(blockRecord, (error, results) => {
+                //console.log('adding block ', blockProcessed);
+                db.collection('blocksProcessed').updateOne({ blockNumber: blockProcessed, status: {$ne : 'OK'}}, {$set: blockRecord}, {upsert: true}, (error, results) => { // Is this slowing the loop? To do - test it.
                     if(error) { if(error.code != 11000) {console.log(error);}}
                 });
 
@@ -301,25 +338,14 @@ async function fillOperations() {
                 console.log('finished ' + blockProcessed + ' (' + blocksCompleted + ')' );
                 console.log('----------------');
 
-                if (blocksCompleted == blocksToProcess) {
-                    let runTime = Date.now() - launchTime;
-                    console.log('unknownOperations: ', unknownOperations);
-                    console.log('End time: ' + (Date.now() - launchTime));
-                    console.log('----------------');
-                    console.log('REPORT');
-                    console.log('Start date: ', openDate);
-                    console.log('Blocks covered: ', openBlock + ' to ' + closeBlock);
-                    console.log('Blocks processed: ' + blocksCompleted);
-                    console.log('Error Count: ' + errorCount);
-                    console.log('Average speed: ' + (runTime/blocksCompleted/1000).toFixed(4) + 's.');
-                    console.log('db closing');
-                    //mclient.close();
-
+                if (blocksCompleted  + blocksOK == blocksToProcess) {
+                    completeOperationsLoop();
 
                 } else if (blocksStarted - blocksCompleted < 5) {
-                    fiveBlock(openBlock + blocksStarted);
+                    fiveBlock();
                 }
             } catch (error) {
+                console.log('blockNumber:', localBlockNo);
                 console.log(error);
             }
         } else {
@@ -337,6 +363,23 @@ async function fillOperations() {
             errorCount += 1;
         }
     }
+
+    function completeOperationsLoop() {
+        let runTime = Date.now() - launchTime;
+        console.log('unknownOperations: ', unknownOperations);
+        console.log('End time: ' + (Date.now() - launchTime));
+        console.log('----------------');
+        console.log('REPORT');
+        console.log('Start date: ', openDate);
+        console.log('Blocks covered: ', openBlock + ' to ' + closeBlock);
+        console.log('Blocks processed: ' + blocksCompleted);
+        console.log('Blocks previously processed: ' + blocksOK);
+        console.log('Error Count: ' + errorCount);
+        console.log('Average speed: ' + (runTime/blocksCompleted/1000).toFixed(4) + 's.');
+        //console.log('db closing');
+        //client.close();
+    }
+
 // Closing fillOperations
 }
 
@@ -389,6 +432,65 @@ async function reportBlocks() {
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
         await mongoblock.reportBlocksProcessed(db, openBlock, closeBlock, 'report');
+    } else {
+        console.log('Parameter issue');
+    }
+}
+
+
+
+// Function to provide parameters for findCommentsMongo
+// ----------------------------------------------------
+async function findComments() {
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        await mongoblock.findCommentsMongo(parameter3, db, openBlock, closeBlock);
+    } else {
+        console.log('Parameter issue');
+    }
+}
+
+
+// Function to provide parameters for reportCommentsMongo
+// ----------------------------------------------------
+async function reportComments() {
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+
+    if (parameterIssue == false) {
+        let marketShareSummary = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock);
+        let exportData = postprocessing.marketShareProcessing(marketShareSummary);
+        const fieldNames = ['application', 'authors', 'authorsRank', 'posts', 'postsRank', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_vests', 'curator_payout_vests'];
+        postprocessing.dataExport(exportData.slice(0), 'marketShareTest', fieldNames);
+        console.log('');
+        console.log('closing mongo db');
+        console.log('------------------------------------------------------------------------');
+        console.log('------------------------------------------------------------------------');
+        client.close();
+    } else {
+        console.log('Parameter issue');
+    }
+}
+
+
+
+// Investigation
+// -------------
+async function investigation() {
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        await mongoblock.investigationMongo(db, openBlock, closeBlock);
     } else {
         console.log('Parameter issue');
     }
