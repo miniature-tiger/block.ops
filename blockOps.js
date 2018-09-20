@@ -45,7 +45,7 @@ if (commandLine == 'setup') {
 } else if (commandLine == 'filloperations') {
     fillOperations();
 } else if (commandLine == 'reportcomments') {
-    mongoblock.reportComments(MongoClient, url, dbName);
+    reportComments();
 } else if (commandLine == 'reportblocks') {
     reportBlocks();
 } else if (commandLine == 'findcomments') {
@@ -325,7 +325,7 @@ async function fillOperations() {
                 }
                 // Add record of block processed to database
                 let blockRecord = {blockNumber: blockProcessed, timestamp: timestamp, status: 'OK'};
-                console.log('adding block ', blockProcessed);
+                //console.log('adding block ', blockProcessed);
                 db.collection('blocksProcessed').updateOne({ blockNumber: blockProcessed, status: {$ne : 'OK'}}, {$set: blockRecord}, {upsert: true}, (error, results) => { // Is this slowing the loop? To do - test it.
                     if(error) { if(error.code != 11000) {console.log(error);}}
                 });
@@ -445,6 +445,22 @@ async function findComments() {
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
         await mongoblock.findCommentsMongo(parameter3, db, openBlock, closeBlock);
+    } else {
+        console.log('Parameter issue');
+    }
+}
+
+
+// Function to provide parameters for reportCommentsMongo
+// ----------------------------------------------------
+async function reportComments() {
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        await mongoblock.reportCommentsMongo(db, openBlock, closeBlock);
     } else {
         console.log('Parameter issue');
     }

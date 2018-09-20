@@ -158,14 +158,11 @@ module.exports.mongoCuratorReward = mongoCuratorReward;
 
 // Function reports on comments
 // ----------------------------
-async function reportComments(MongoClient, url, dbName) {
-    client = await MongoClient.connect(url, { useNewUrlParser: true });
-    console.log('Connected to server.');
-    const db = client.db(dbName);
-    const collection = db.collection('comments');
+async function reportCommentsMongoOld(db, openBlock, closeBlock) {
 
-    collection.aggregate([
-        { $match : {operations: 'comment'}},
+    db.collection('comments').aggregate([
+        { $match :  {$and :[{operations: 'comment'},
+                    {blockNumber: { $gte: openBlock, $lt: closeBlock }}]} },
         { $project : {_id: 0, application: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1}},
         { $group : {_id : {application : "$application"},
                     posts: { $sum: 1 },
@@ -193,7 +190,59 @@ async function reportComments(MongoClient, url, dbName) {
         })
 }
 
-module.exports.reportComments = reportComments;
+module.exports.reportCommentsMongoOld = reportCommentsMongoOld;
+
+
+
+// Market share reports on Steem applications
+// ------------------------------------------
+// Note that payments are in relation to comments made in the date range - not payments made within the date range
+async function reportCommentsMongo(db, openBlock, closeBlock) {
+    db.collection('comments').aggregate([
+            { $match :  {$and :[{operations: 'comment'},
+                        {blockNumber: { $gte: openBlock, $lt: closeBlock }}]} },
+            { $project : {_id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1}},
+            { $group : {_id : {application : "$application", author: "$author"},
+                        posts: { $sum: 1 },
+                        author_payout_sbd: {$sum: "$author_payout.sbd"},
+                        author_payout_steem: {$sum: "$author_payout.steem"},
+                        author_payout_vests: {$sum: "$author_payout.vests"},
+                        benefactor_payout_vests: {$sum: "$benefactor_payout.vests"},
+                        curator_payout_vests: {$sum: "$curator_payout.vests"},
+                        }},
+            { $group : {_id : {application : "$_id.application"},
+                        authors: {$sum: 1},
+                        posts: {$sum: "$posts"},
+                        author_payout_sbd: {$sum: "$author_payout_sbd"},
+                        author_payout_steem: {$sum: "$author_payout_steem"},
+                        author_payout_vests: {$sum: "$author_payout_vests"},
+                        benefactor_payout_vests: {$sum: "$benefactor_payout_vests"},
+                        curator_payout_vests: {$sum: "$curator_payout_vests"}
+                        }},
+            { $sort : {authors:-1}}
+        ]).toArray()
+        .then(function(records) {
+            for (let record of records) {
+                record.application = record._id.application;
+                delete record._id;
+                record.author_payout_sbd = Number(record.author_payout_sbd.toFixed(3));
+                record.author_payout_steem = Number(record.author_payout_steem.toFixed(3));
+                record.author_payout_vests = Number(record.author_payout_vests.toFixed(6));
+                record.benefactor_payout_vests = Number(record.benefactor_payout_vests.toFixed(6));
+                record.curator_payout_vests = Number(record.curator_payout_vests.toFixed(6));
+                console.log(record);
+            }
+            console.log('');
+            console.log('closing mongo db');
+            console.log('------------------------------------------------------------------------');
+            console.log('------------------------------------------------------------------------');
+            client.close();
+        });
+}
+
+module.exports.reportCommentsMongo = reportCommentsMongo;
+
+
 
 
 // Function reports on blocks processed
