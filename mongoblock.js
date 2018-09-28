@@ -51,7 +51,7 @@ function processComment(operation, mongoComment, db) {
     } catch(error) {
         // there are lots of errors - refine app derivation for null cases etc
     }
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, blockNumber: operation.block, timestamp: operation.timestamp, transactionNumber: operation.trx_in_block, virtualTrxNumber: operation.virtual_op, transactionType: operation.op[0], application: appName, applicationVersion: appVersion};
+    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, blockNumber: operation.block, timestamp: operation.timestamp, transactionNumber: operation.trx_in_block, transactionType: operation.op[0], application: appName, applicationVersion: appVersion};
     mongoComment(db, record);
 }
 
@@ -72,6 +72,108 @@ function mongoComment(db, localRecord) {
 }
 
 module.exports.mongoComment = mongoComment;
+
+
+
+// Vote - processing of block operation
+// ---------------------------------------------
+function processVote(operation, mongoVote, db) {
+    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, voter: operation.op[1].voter, percent: Number((operation.op[1].weight/100).toFixed(0)), vote_timestamp: operation.timestamp, vote_blockNumber: operation.block};
+    mongoVote(db, record, 0);
+}
+
+module.exports.processVote = processVote;
+
+
+
+// Vote - update / insert of mongo record
+// -----------------------------------------------
+function mongoVote(db, localRecord, reattempt) {
+    let maxReattempts = 1;
+    db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.voter}).toArray()
+        .then(function(result) {
+            // Adds all vote details to curation set if author / permlink / voter combination not found
+            if(result.length === 0) {
+                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$addToSet: {curators: {voter: localRecord.voter, percent: localRecord.percent, vote_timestamp: localRecord.vote_timestamp, vote_blockNumber: localRecord.vote_blockNumber}, operations: 'vote'}}, {upsert: true})
+                    .catch(function(error) {
+                        if(error.code == 11000) {
+                            if (reattempt < maxReattempts) {
+                                console.log('E11000 error with <', localRecord.voter, '> ActiveVote. Re-attempting...');
+                                mongoVote(db, localRecord, 1);
+                            } else {
+                                console.log('E11000 error with <', localRecord.voter, '> ActiveVote. Maximum reattempts surpassed.');
+                            }
+                        } else {
+                            console.log('Non-standard error with <', localRecord.voter, '> ActiveVote.');
+                            console.log(error);
+                        }
+                    });
+            // Updates existing vote details for voter in curation array if author / permlink / voter combination is found
+            } else {
+                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.voter}}},
+                              {$set: {"curators.$.voter": localRecord.voter, "curators.$.percent": localRecord.percent, "curators.$.vote_timestamp": localRecord.vote_timestamp,
+                                      "curators.$.vote_blockNumber": localRecord.vote_blockNumber},
+                                $addToSet: {operations: 'vote'}}, {upsert: false})
+                    .catch(function(error) {
+                          console.log('Error: vote', localRecord.voter);
+                    });
+            }
+        })
+}
+
+module.exports.mongoVote = mongoVote;
+
+
+
+// ActiveVotes - processing of active votes (extracted at end of voting period)
+// ----------------------------------------------------------------------------
+function processActiveVote(localVote, localAuthor, localPermlink, mongoActiveVote, db) {
+    let formatVote = {voter: localVote.voter, curation_weight: localVote.weight, rshares: Number(localVote.rshares),
+                              percent: Number((localVote.percent/100).toFixed(2)), reputation: Number(localVote.reputation), vote_timestamp: localVote.time}
+    let record = {author: localAuthor, permlink: localPermlink, activeVote: formatVote};
+    mongoActiveVote(db, record, 0);
+}
+
+module.exports.processActiveVote = processActiveVote;
+
+
+
+// ActiveVotes - update / insert of mongo record
+// ---------------------------------------------
+function mongoActiveVote(db, localRecord, reattempt) {
+    let maxReattempts = 1;
+    db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.activeVote.voter}).toArray()
+        .then(function(result) {
+            // Adds all vote details to curation set if author / permlink / voter combination not found
+            if(result.length === 0) {
+                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$addToSet: {curators: localRecord.activeVote, operations: 'active_votes'}}, {upsert: true})
+                    .catch(function(error) {
+                        if(error.code == 11000) {
+                            if (reattempt < maxReattempts) {
+                                console.log('E11000 error with <', localRecord.activeVote.voter, '> ActiveVote. Re-attempting...');
+                                mongoActiveVote(db, localRecord, 1);
+                            } else {
+                                console.log('E11000 error with <', localRecord.activeVote.voter, '> ActiveVote. Maximum reattempts surpassed.');
+                            }
+                        } else {
+                            console.log('Non-standard error with <', localRecord.activeVote.voter, '> ActiveVote.');
+                            console.log(error);
+                        }
+                    });
+            // Updates existing vote details for voter in curation array if author / permlink / voter combination is found
+            } else {
+                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.activeVote.voter}}},
+                              {$set: {"curators.$.voter": localRecord.activeVote.voter, "curators.$.curation_weight": localRecord.activeVote.curation_weight, "curators.$.rshares": localRecord.activeVote.rshares,
+                                "curators.$.percent": localRecord.activeVote.percent, "curators.$.reputation": localRecord.activeVote.reputation, "curators.$.vote_timestamp": localRecord.activeVote.vote_timestamp},
+                                $addToSet: {operations: 'active_votes'}}, {upsert: false})
+                    .catch(function(error) {
+                          console.log('Error: active_vote', localRecord.activeVote.voter);
+                    });
+            }
+        })
+}
+
+module.exports.mongoActiveVote = mongoActiveVote;
 
 
 
@@ -105,7 +207,8 @@ module.exports.mongoAuthorReward = mongoAuthorReward;
 // Benefactor Reward - processing of block operation
 // -------------------------------------------------
 function processBenefactorReward(operation, mongoBenefactorReward, db) {
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, benefactor: operation.op[1].benefactor, benefactor_timestamp: operation.timestamp, benefactor_payout: {vests: Number(operation.op[1].reward.split(' ', 1)[0])}};
+    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, benefactor: operation.op[1].benefactor, benefactor_timestamp: operation.timestamp,
+                          benefactor_payout: {sbd: Number(operation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(operation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(operation.op[1].vesting_payout.split(' ', 1)[0])}};
     mongoBenefactorReward(db, record);
 }
 
@@ -117,7 +220,8 @@ module.exports.processBenefactorReward = processBenefactorReward;
 // -----------------------------------------------
 function mongoBenefactorReward(db, localRecord) {
     // Uses upsert - blocks may be processed in any order so author/permlink record may already exist if another operation is processed first
-    db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, "benefactors.user": {$ne: localRecord.benefactor}}, {$inc: {"benefactor_payout.vests": localRecord.benefactor_payout.vests}, $addToSet: {operations: 'benefactor_payout', benefactors: {user: localRecord.benefactor, vests: localRecord.benefactor_payout.vests, timestamp: localRecord.benefactor_timestamp}}}, {upsert: true})
+    db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, "benefactors.user": {$ne: localRecord.benefactor}}, {$inc: {"benefactor_payout.sbd": localRecord.benefactor_payout.sbd, "benefactor_payout.steem": localRecord.benefactor_payout.steem, "benefactor_payout.vests": localRecord.benefactor_payout.vests},
+                                              $addToSet: {operations: 'benefactor_payout', benefactors: {user: localRecord.benefactor, sbd: localRecord.benefactor_payout.sbd, steem: localRecord.benefactor_payout.steem, vests: localRecord.benefactor_payout.vests, timestamp: localRecord.benefactor_timestamp}}}, {upsert: true})
         .catch(function(error) {
             if(error.code != 11000) {
                 console.log(error); // ignore 11000 errors as there are many duplicated operations in AppBase
@@ -132,8 +236,8 @@ module.exports.mongoBenefactorReward = mongoBenefactorReward;
 // Curator Reward - processing of block operation
 // -------------------------------------------------
 function processCuratorReward(operation, mongoCuratorReward, db) {
-    let record = {author: operation.op[1].comment_author, permlink: operation.op[1].comment_permlink, curator: operation.op[1].curator, curator_timestamp: operation.timestamp, curator_payout: {vests: Number(operation.op[1].reward.split(' ', 1)[0])}};
-    mongoCuratorReward(db, record);
+    let record = {author: operation.op[1].comment_author, permlink: operation.op[1].comment_permlink, voter: operation.op[1].curator, reward_timestamp: operation.timestamp, curator_payout: {vests: Number(operation.op[1].reward.split(' ', 1)[0])}};
+    mongoCuratorReward(db, record, 0);
 }
 
 module.exports.processCuratorReward = processCuratorReward;
@@ -142,15 +246,40 @@ module.exports.processCuratorReward = processCuratorReward;
 
 // Curator Reward - update / insert of mongo record
 // -----------------------------------------------
-function mongoCuratorReward(db, localRecord) {
-    // Uses upsert - blocks may be processed in any order so author/permlink record may already exist if another operation is processed first
-    db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, "curators.user": {$ne: localRecord.curator}}, {$inc: {"curator_payout.vests": localRecord.curator_payout.vests}, $addToSet: {operations: 'curator_payout', curators: {user: localRecord.curator, vests: localRecord.curator_payout.vests, timestamp: localRecord.curator_timestamp}}}, {upsert: true})
-        .catch(function(error) {
-            if(error.code != 11000) {
-                console.log(error); // ignore 11000 errors as there are many duplicated operations in AppBase
+function mongoCuratorReward(db, localRecord, reattempt) {
+    let maxReattempts = 1;
+    db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.voter}).toArray()
+        .then(function(result) {
+            // Adds all vote details to curation set if author / permlink / voter combination not found
+            if(result.length === 0) {
+                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$inc: {"curator_payout.vests": localRecord.curator_payout.vests},
+                                                        $addToSet: {curators: {voter: localRecord.voter, vests: localRecord.curator_payout.vests, reward_timestamp: localRecord.reward_timestamp}, operations: 'curator_payout'}}, {upsert: true})
+                    .catch(function(error) {
+                        if(error.code == 11000) {
+                            if (reattempt < maxReattempts) {
+                                console.log('E11000 error with <', localRecord.voter, '> curator_payout. Re-attempting...');
+                                mongoVote(db, localRecord, 1);
+                            } else {
+                                console.log('E11000 error with <', localRecord.voter, '> curator_payout. Maximum reattempts surpassed.');
+                            }
+                        } else {
+                            console.log('Non-standard error with <', localRecord.voter, '> curator_payout.');
+                            console.log(error);
+                        }
+                    });
+            // Updates existing vote details for voter in curation array if author / permlink / voter combination is found
+            } else {
+
+                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.voter}}},
+                              {$set: {"curators.$.voter": localRecord.voter, "curators.$.vests": localRecord.curator_payout.vests, "curators.$.reward_timestamp": localRecord.reward_timestamp},
+                                $addToSet: {operations: 'curator_payout'}}, {upsert: false})
+                    .catch(function(error) {
+                          console.log('Error: curator_payout', localRecord.voter);
+                    });
             }
-        });
+        })
 }
+
 
 module.exports.mongoCuratorReward = mongoCuratorReward;
 
@@ -295,10 +424,8 @@ async function reportBlocksProcessed(db, openBlock, closeBlock, retort) {
         } else {
             console.log(result[0], result[result.length-1], result.length);
         }
-
         return result;
     }
-
 }
 
 module.exports.reportBlocksProcessed = reportBlocksProcessed;
@@ -309,13 +436,22 @@ module.exports.reportBlocksProcessed = reportBlocksProcessed;
 // -------------------------------------------------------------------------------
 function findCommentsMongo(localApp, db, openBlock, closeBlock) {
     db.collection('comments').find(
+
+        {$and : [
+            {operations: 'comment'},
+            {operations: 'vote'},
+            {operations: 'author_payout'},
+        ]}
+
+    ).toArray()
+    db.collection('comments').find(
         {$and : [
             { blockNumber: { $gte: openBlock, $lt: closeBlock }},
             { application: localApp }
         ]}).sort({author:1}).toArray()
         .then(function(details) {
             for (let comment of details) {
-                console.log(comment);
+                console.dir(comment, { depth: null });
             }
             client.close();
         })
@@ -340,8 +476,6 @@ function investigationMongo(db, openBlock, closeBlock) {
             let i = 0, counter = 0, max = 0;
             console.log(details.length + ' records')
             for (let comment of details) {
-                //if (i < 10) {
-                  //console.log(comment);
                 for (let indiv of comment.curators) {
                     let differential = (new Date(indiv.timestamp) - new Date(comment.timestamp)) - (7*24*60*60*1000);
                     if (differential != 0) {
@@ -354,9 +488,7 @@ function investigationMongo(db, openBlock, closeBlock) {
                         console.log(comment);
                         max = comment.curators.length
                     }
-                //}
-                //i += 1;
-              }
+                }
             }
             console.log('counter', counter);
             client.close();

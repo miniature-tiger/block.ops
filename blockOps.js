@@ -46,6 +46,7 @@ if (commandLine == 'setup') {
 } else if (commandLine == 'filloperations') {
     fillOperations();
 } else if (commandLine == 'reportcomments') {
+    // Market share reports on Steem applications
     reportComments();
 } else if (commandLine == 'reportblocks') {
     reportBlocks();
@@ -254,6 +255,7 @@ async function fillOperations() {
     let blocksToProcess = 0;
     let blocksPerRound = 8; // x blocks called for processing at a time
     let unknownOperations = [];
+    let unknownVirtuals = [];
     let blockProcessNumber = 1000;
     let priorArrayCount = 0;
     let blocksOK = 0;
@@ -313,7 +315,10 @@ async function fillOperations() {
 
                     if (operation.op[0] == 'comment') {
                         mongoblock.processComment(operation, mongoblock.mongoComment, db);
+                    } else if (operation.op[0] == 'vote') {
+                        mongoblock.processVote(operation, mongoblock.mongoVote, db);
                     } else if (operation.op[0] == 'author_reward') {
+                        activeVotes(operation);
                         mongoblock.processAuthorReward(operation, mongoblock.mongoAuthorReward, db);
                     } else if (operation.op[0] == 'comment_benefactor_reward') {
                         mongoblock.processBenefactorReward(operation, mongoblock.mongoBenefactorReward, db);
@@ -321,8 +326,8 @@ async function fillOperations() {
                         mongoblock.processCuratorReward(operation, mongoblock.mongoCuratorReward, db);
                     } else {
                         // Operations not handled:
-                        if (!unknownOperations.includes(operation.op[0])) {
-                            unknownOperations.push(operation.op[0]);
+                        if (!unknownVirtuals.includes(operation.op[0])) {
+                            unknownVirtuals.push(operation.op[0]);
                         }
                     }
                 }
@@ -346,15 +351,18 @@ async function fillOperations() {
                 }
             } catch (error) {
                 console.log('blockNumber:', localBlockNo);
+                console.log('Error in processing virtual ops');
+                console.dir(JSON.parse(body), { depth: null });
                 console.log(error);
             }
         } else {
-            console.log('Error in processing block:', localBlockNo);
+            console.log('Error in processing virtual ops:', localBlockNo);
             if (error.errno = 'ENOTFOUND') {
                 console.log('ENOTFOUND: Most likely error is connection lost.'); // to do: deal with checking which blocks loaded, reconnecting, and restarting loop.
             } else {
                 console.log(error);
             }
+
             let blockRecord = {blockNumber: localBlockNo, status: 'error'};
             db.collection('blocksProcessed').insertOne(blockRecord, (error, results) => {
                 if(error) { if(error.code != 11000) {console.log(error);}}
@@ -363,6 +371,15 @@ async function fillOperations() {
             errorCount += 1;
         }
     }
+
+    async function activeVotes(localOperation) {
+        let votesList = await steemrequest.getActiveVotes(localOperation.op[1].author, localOperation.op[1].permlink);
+        votesList = JSON.parse(votesList);
+        for (let vote of votesList.result) {
+            mongoblock.processActiveVote(vote, localOperation.op[1].author, localOperation.op[1].permlink, mongoblock.mongoActiveVote, db);
+        }
+    }
+
 
     function completeOperationsLoop() {
         let runTime = Date.now() - launchTime;

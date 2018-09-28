@@ -1,6 +1,9 @@
 const request = require('request');
 const requestPromise = require('request-promise-native');
 
+let url20 = 'https://api.steemit.com'
+
+
 
 // Function returns global properties including latest block number (uses condenser_api.get_dynamic_global_properties)
 // -------------------------------------------------------------------------------------------------------------------
@@ -10,7 +13,7 @@ function getDynamicGlobalPropertiesAppBase() {
 
     let dataString = '{"jsonrpc":"2.0", "method":"condenser_api.get_dynamic_global_properties", "params":[], "id":1}';
     let options = {
-        url: 'https://api.steemit.com',
+        url: url20,
         method: 'POST',
         body: dataString,
     }
@@ -57,7 +60,7 @@ function getBlockHeaderAppBase(localBlockNo) {
 
     let dataString = '{"jsonrpc":"2.0", "method":"condenser_api.get_block_header", "params": [' + localBlockNo + '], "id":1}';
     let options = {
-        url: 'https://api.steemit.com',
+        url: url20,
         method: 'POST',
         body: dataString
     }
@@ -118,10 +121,28 @@ module.exports.checkFirstBlock = checkFirstBlock;
 
 // Function returns a single block from AppBase with all operations including virtual operations (uses condenser_api.get_ops_in_block)
 // -----------------------------------------------------------------------------------------------------------------------------------
-function getOpsAppBase(localBlockNo, processOps) {
-    dataString = '{"jsonrpc":"2.0", "method":"condenser_api.get_ops_in_block", "params": [' + localBlockNo + '], "id":1}';
+function getBlockAppBase(localBlockNo, processBlock) {
+    dataString = '{"jsonrpc":"2.0", "method":"condenser_api.get_block", "params": [' + localBlockNo + '], "id":1}';
     let options = {
-        url: 'https://api.steemit.com',
+        url: url20,
+        method: 'POST',
+        body: dataString
+    }
+    request(options, function(error, response, body) {
+        processBlock(error, response, body, localBlockNo);
+    });
+}
+
+module.exports.getBlockAppBase = getBlockAppBase;
+
+
+
+// Function returns a single block from AppBase with only virtual operations (uses condenser_api.get_ops_in_block with true for virtual only)
+// ------------------------------------------------------------------------------------------------------------------------------------------
+function getOpsAppBase(localBlockNo, processOps) {
+    dataString = '{"jsonrpc":"2.0", "method":"condenser_api.get_ops_in_block", "params": [' + localBlockNo + ', false], "id":1}';
+    let options = {
+        url: url20,
         method: 'POST',
         body: dataString
     }
@@ -131,6 +152,29 @@ function getOpsAppBase(localBlockNo, processOps) {
 }
 
 module.exports.getOpsAppBase = getOpsAppBase;
+
+
+
+// Function returns active votes from a single author / premlink defined comment
+// -----------------------------------------------------------------------------
+// < Returns a promise >
+function getActiveVotes(localAuthor, localPermlink) {
+    dataString = '{"jsonrpc":"2.0", "method":"condenser_api.get_active_votes", "params":["' + localAuthor + '", "' + localPermlink + '"], "id":1}';
+    let options = {
+        url: url20,
+        method: 'POST',
+        body: dataString
+    }
+
+    return requestPromise(options)
+        .catch(function(error) {
+            console.log(error);
+        });
+}
+
+module.exports.getActiveVotes = getActiveVotes;
+
+
 
 // Function checks whether two UTC dates are on the same day
 // ---------------------------------------------------------
@@ -148,6 +192,7 @@ function checkSameDay(firstDate, secondDate) {
     }
     return result;
 }
+
 
 
 // Function returns a UTC date one day forward in time
