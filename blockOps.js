@@ -54,6 +54,8 @@ if (commandLine == 'setup') {
     findComments();
 } else if (commandLine == 'investigation') {
     investigation();
+} else if (commandLine == 'findcurator') {
+    findCurator();
 } else {
     // end
 }
@@ -508,6 +510,23 @@ async function investigation() {
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
         await mongoblock.investigationMongo(db, openBlock, closeBlock);
+    } else {
+        console.log('Parameter issue');
+    }
+}
+
+
+
+// TESTING STRUCTURE OF DATA - Finds a curator
+// -------------------------------------------
+async function findCurator() {
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        await mongoblock.findCuratorMongo(parameter3, db, openBlock, closeBlock);
     } else {
         console.log('Parameter issue');
     }

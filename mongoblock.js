@@ -180,7 +180,7 @@ module.exports.mongoActiveVote = mongoActiveVote;
 // Author Reward - processing of block operation
 // ---------------------------------------------
 function processAuthorReward(operation, mongoAuthorReward, db) {
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, author_payout: {sbd: Number(operation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(operation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(operation.op[1].vesting_payout.split(' ', 1)[0])}, author_payout_timestamp: operation.timestamp };
+    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, author_payout: {sbd: Number(operation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(operation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(operation.op[1].vesting_payout.split(' ', 1)[0])}, payout_blockNumber: operation.block, payout_timestamp: operation.timestamp };
     mongoAuthorReward(db, record);
 }
 
@@ -438,17 +438,13 @@ function findCommentsMongo(localApp, db, openBlock, closeBlock) {
     db.collection('comments').find(
 
         {$and : [
-            {operations: 'comment'},
-            {operations: 'vote'},
+            { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
+            //{operations: 'comment'},
+            //{operations: 'vote'},
             {operations: 'author_payout'},
         ]}
 
     ).toArray()
-    db.collection('comments').find(
-        {$and : [
-            { blockNumber: { $gte: openBlock, $lt: closeBlock }},
-            { application: localApp }
-        ]}).sort({author:1}).toArray()
         .then(function(details) {
             for (let comment of details) {
                 console.dir(comment, { depth: null });
@@ -499,3 +495,71 @@ function investigationMongo(db, openBlock, closeBlock) {
 }
 
 module.exports.investigationMongo = investigationMongo;
+
+
+
+// Analysis of curator rewards: vests to rshares ratio for a single voter or all voters
+// ------------------------------------------------------------------------------------
+function findCuratorMongo(voter, db, openBlock, closeBlock) {
+    let steemPerVests = 0.00049495; // Temporary while indexes are built for all the various currencies and measures!
+    let rsharesToVoteValue = 867700000000; // Temporary while indexes are built for all the various currencies and measures!
+    console.log(openBlock, closeBlock, voter);
+    let minRshares = 100000000000; // 100bn
+
+    // If no account name is chosen then all ratios are examined for all users and the top ones logged
+    if (voter == undefined) {
+        db.collection('comments').aggregate([
+                { $match :  {$and :[
+                                { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                                { curators: { $exists : true}}
+                            ]} },
+                { $project : { author: 1, permlink: 1, blockNumber: 1, curators: {$filter: {input: "$curators", as: "curator", cond: { $and: [{$gt: [ "$$curator.vests", 0 ] }, {$gt: [ "$$curator.rshares", minRshares ]}] }}}}},
+                { $unwind : "$curators" },
+                { $project : { _id: 0, curators: {voter: 1, vests: 1, rshares: 1, ratio: { $divide: [ "$curators.vests", "$curators.rshares" ]}, SP_reward: { $multiply: [ "$curators.vests", steemPerVests ]}, STU_vote_value: { $divide: [ "$curators.rshares", rsharesToVoteValue ]}}, author: 1, permlink: 1, blockNumber: 1}},
+                { $sort : { "curators.ratio": -1}}
+            ]).toArray()
+            .then(function(curatorArray) {
+                processResult(curatorArray);
+            })
+            .catch(function(error) {
+                console.log(error);
+            });
+    // If an account name is chosen then all the curation ratios for this account are found and sorted
+    } else {
+        db.collection('comments').aggregate([
+                { $match :  {$and :[
+                                { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                                { curators: { $exists : true}},
+                                { "curators.voter": voter},
+                            ]} },
+                { $project : { author: 1, permlink: 1, blockNumber: 1, curators: {$filter: {input: "$curators", as: "curator", cond: { $and: [{$gt: [ "$$curator.vests", 0 ] }, {$gt: [ "$$curator.rshares", minRshares ]}] }  }}}},
+                { $unwind : "$curators" },
+                { $match: {"curators.voter": voter}},
+                { $project : { _id: 0, curators: {voter: 1, vests: 1, rshares: 1, ratio: { $divide: [ "$curators.vests", "$curators.rshares" ]}, SP_reward: { $multiply: [ "$curators.vests", steemPerVests ]}, STU_vote_value: { $divide: [ "$curators.rshares", rsharesToVoteValue ]}}, author: 1, permlink: 1, blockNumber: 1}},
+                { $sort : { "curators.ratio": -1}}
+            ]).toArray()
+            .then(function(curatorArray) {
+                processResult(curatorArray);
+            })
+            .catch(function(error) {
+                console.log(error);
+            });
+    }
+
+    function processResult(curatorArray) {
+        let i = 0;
+        for (let vote of curatorArray) {
+            if (i < 10) {
+                vote.curators.ratio = Number((vote.curators.ratio*1000000000).toFixed(3));
+                vote.curators.SP_reward = Number((vote.curators.SP_reward).toFixed(3));
+                vote.curators.STU_vote_value = Number((vote.curators.STU_vote_value).toFixed(3));
+                console.dir(vote, { depth: null });
+            }
+            i+=1;
+        }
+        console.log('Total count analysed', i);
+        client.close();
+    }
+}
+
+module.exports.findCuratorMongo = findCuratorMongo;
