@@ -262,6 +262,8 @@ async function fillOperations() {
     let priorArrayCount = 0;
     let blocksOK = 0;
     let blockProcessArray = [];
+    let lastHour = 25;
+    let currentHour = 0;
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     console.log(openBlock, closeBlock, parameterIssue);
@@ -310,11 +312,17 @@ async function fillOperations() {
         if (!error) {
             try {
                 let result = JSON.parse(body).result;
-                for (let operation of result) {
-                    // Extracts blockNumber and timestamp
-                    blockProcessed = operation.block;
-                    timestamp = operation.timestamp;
+                numberOfOps = result.length;
+                opsNotHandled = 0;
+                timestamp = result[result.length-1].timestamp;
 
+                // Add record of block to blocksProcessed collection in database
+                let blockRecord = {blockNumber: localBlockNo, timestamp: timestamp, status: 'Processing', operations: [], operationsCount: numberOfOps, operationsProcessed: 0};
+                db.collection('blocksProcessed').updateOne({ blockNumber: localBlockNo, status: {$ne : 'OK'}}, {$set: blockRecord}, {upsert: true}, (error, results) => {
+                    if(error) { if(error.code != 11000) {console.log(error);}}
+                });
+
+                for (let operation of result) {
                     if (operation.op[0] == 'comment') {
                         mongoblock.processComment(operation, mongoblock.mongoComment, db);
                     } else if (operation.op[0] == 'vote') {
@@ -328,21 +336,19 @@ async function fillOperations() {
                         mongoblock.processCuratorReward(operation, mongoblock.mongoCuratorReward, db);
                     } else {
                         // Operations not handled:
+                        opsNotHandled += 1;
                         if (!unknownVirtuals.includes(operation.op[0])) {
                             unknownVirtuals.push(operation.op[0]);
                         }
                     }
                 }
-                // Add record of block processed to database
-                let blockRecord = {blockNumber: blockProcessed, timestamp: timestamp, status: 'OK'};
-                //console.log('adding block ', blockProcessed);
-                db.collection('blocksProcessed').updateOne({ blockNumber: blockProcessed, status: {$ne : 'OK'}}, {$set: blockRecord}, {upsert: true}, (error, results) => { // Is this slowing the loop? To do - test it.
-                    if(error) { if(error.code != 11000) {console.log(error);}}
-                });
+
+                recordOperation = {transactionType: 'notHandled', status: 'OK'};
+                mongoblock.mongoOperationProcessed(db, localBlockNo, recordOperation, opsNotHandled);
 
                 blocksCompleted += 1;
                 console.log('----------------');
-                console.log('finished ' + blockProcessed + ' (' + blocksCompleted + ')' );
+                console.log('finished ' + localBlockNo + ' (' + blocksCompleted + ')' );
                 console.log('----------------');
 
                 if (blocksCompleted  + blocksOK == blocksToProcess) {
@@ -354,7 +360,7 @@ async function fillOperations() {
             } catch (error) {
                 console.log('blockNumber:', localBlockNo);
                 console.log('Error in processing virtual ops');
-                console.dir(JSON.parse(body), { depth: null });
+                //console.dir(JSON.parse(body), { depth: null });
                 console.log(error);
             }
         } else {
@@ -377,11 +383,15 @@ async function fillOperations() {
     async function activeVotes(localOperation) {
         let votesList = await steemrequest.getActiveVotes(localOperation.op[1].author, localOperation.op[1].permlink);
         votesList = JSON.parse(votesList);
+        db.collection('blocksProcessed').updateOne({ blockNumber: localOperation.block, operations: { $elemMatch: { virtualOp: localOperation.virtual_op}}}, {$set: {"operations.$.activeVotesCount": votesList.result.length, "operations.$.activeVotesProcessed": 0}}, {upsert: false}, (error, results) => {
+            if (error) {
+                console.log(error);
+            }
+        });
         for (let vote of votesList.result) {
-            mongoblock.processActiveVote(vote, localOperation.op[1].author, localOperation.op[1].permlink, mongoblock.mongoActiveVote, db);
+            mongoblock.processActiveVote(vote, localOperation.op[1].author, localOperation.op[1].permlink, localOperation.block, localOperation.virtual_op, mongoblock.mongoActiveVote, db);
         }
     }
-
 
     function completeOperationsLoop() {
         let runTime = Date.now() - launchTime;
