@@ -264,6 +264,7 @@ async function fillOperations() {
     let blockProcessArray = [];
     let lastHour = 25;
     let currentHour = 0;
+    let tokenFlag = false;
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     console.log(openBlock, closeBlock, parameterIssue);
@@ -289,15 +290,16 @@ async function fillOperations() {
                     console.log('blocksOK', blocksOK);
                 }
                 while (blockProcessArray.length == 0 && (blocksStarted + blocksOK < blocksToProcess));
+
+                // Reset operations counter in blocksProcessed for blocks being rerun
+                mongoblock.resetBlocksProcessed(db, blockProcessArray[0], blockProcessArray[blockProcessArray.length-1]);
             }
+
             if (blocksStarted + blocksOK < blocksToProcess) {
                 blockNo = blockProcessArray[blocksStarted - priorArrayCount];
-                console.log('----------------');
-                console.log('started ' + blockNo);
                 // Gets data for one block, processes it in callback "processOps"
                 steemrequest.getOpsAppBase(blockNo, processOps);
                 blocksStarted += 1;
-                console.log('----------------');
             } else {
                 console.log('break');
                 completeOperationsLoop()
@@ -312,22 +314,29 @@ async function fillOperations() {
         if (!error) {
             try {
                 let result = JSON.parse(body).result;
+                //console.dir(JSON.parse(body), {depth: null})
                 numberOfOps = result.length;
                 opsNotHandled = 0;
                 timestamp = result[result.length-1].timestamp;
+                currentHour = (new Date(timestamp + '.000Z')).getUTCHours();
+                // Sets flag for token price calculations for block at start of hour
+                if (currentHour != lastHour) {
+                    tokenFlag = true;
+                    lastHour = currentHour;
+                }
 
                 // Add record of block to blocksProcessed collection in database
-                let blockRecord = {blockNumber: localBlockNo, timestamp: timestamp, status: 'Processing', operations: [], operationsCount: numberOfOps, operationsProcessed: 0};
-                db.collection('blocksProcessed').updateOne({ blockNumber: localBlockNo, status: {$ne : 'OK'}}, {$set: blockRecord}, {upsert: true}, (error, results) => {
-                    if(error) { if(error.code != 11000) {console.log(error);}}
-                });
+                let blockRecord = {blockNumber: localBlockNo, timestamp: timestamp, tokenFlag: tokenFlag, status: 'Processing', operationsCount: numberOfOps};
+                mongoblock.mongoBlockProcessed(db, blockRecord, 0);
 
                 for (let operation of result) {
                     if (operation.op[0] == 'comment') {
+                        //workComment(operation);
                         mongoblock.processComment(operation, mongoblock.mongoComment, db);
                     } else if (operation.op[0] == 'vote') {
                         mongoblock.processVote(operation, mongoblock.mongoVote, db);
                     } else if (operation.op[0] == 'author_reward') {
+                        mongoblock.validateComments(db, operation);
                         activeVotes(operation);
                         mongoblock.processAuthorReward(operation, mongoblock.mongoAuthorReward, db);
                     } else if (operation.op[0] == 'comment_benefactor_reward') {
@@ -343,13 +352,10 @@ async function fillOperations() {
                     }
                 }
 
-                recordOperation = {transactionType: 'notHandled', status: 'OK'};
-                mongoblock.mongoOperationProcessed(db, localBlockNo, recordOperation, opsNotHandled);
-
+                recordOperation = {transactionType: 'notHandled', count: opsNotHandled, status: 'OK'};
+                mongoblock.mongoOperationProcessed(db, localBlockNo, recordOperation, opsNotHandled, 0);
+                tokenFlag = false;
                 blocksCompleted += 1;
-                console.log('----------------');
-                console.log('finished ' + localBlockNo + ' (' + blocksCompleted + ')' );
-                console.log('----------------');
 
                 if (blocksCompleted  + blocksOK == blocksToProcess) {
                     completeOperationsLoop();
@@ -361,7 +367,7 @@ async function fillOperations() {
                 console.log('blockNumber:', localBlockNo);
                 console.log('Error in processing virtual ops');
                 //console.dir(JSON.parse(body), { depth: null });
-                console.log(error);
+                console.log(error); // TO DO - update to register an error in the blocksProcessed collection rather than log error
             }
         } else {
             console.log('Error in processing virtual ops:', localBlockNo);
@@ -393,14 +399,14 @@ async function fillOperations() {
         }
     }
 
+
     function completeOperationsLoop() {
         let runTime = Date.now() - launchTime;
         console.log('unknownOperations: ', unknownOperations);
         console.log('End time: ' + (Date.now() - launchTime));
         console.log('----------------');
         console.log('REPORT');
-        console.log('Start date: ', openDate);
-        console.log('Blocks covered: ', openBlock + ' to ' + closeBlock);
+        console.log('Blocks covered: ' + openBlock + ' to ' + closeBlock);
         console.log('Blocks processed: ' + blocksCompleted);
         console.log('Blocks previously processed: ' + blocksOK);
         console.log('Error Count: ' + errorCount);
@@ -421,7 +427,9 @@ async function blockRangeDefinition(db) {
 
     let openBlock = 0, closeBlock = 0, parameterIssue = false;
 
-    if (typeof parameter1 == 'string') {
+    if (!(isNaN(parameter1))) {
+        openBlock = Number(parameter1);
+    } else if (typeof parameter1 == 'string') {
         openDate = new Date(parameter1);
         openDateEnd = helperblock.forwardOneDay(openDate);
         openBlock = await mongoblock.dateToBlockNumber(openDate, openDateEnd, db)

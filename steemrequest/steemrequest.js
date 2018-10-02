@@ -168,11 +168,32 @@ function getActiveVotes(localAuthor, localPermlink) {
 
     return requestPromise(options)
         .catch(function(error) {
-            console.log(error);
+            console.log(error); // TO DO - update to register an error in the blocksProcessed collection rather than log error
         });
 }
 
 module.exports.getActiveVotes = getActiveVotes;
+
+
+
+// Function returns comment from a single author / premlink combination
+// --------------------------------------------------------------------
+// < Returns a promise >
+function getComment(localAuthor, localPermlink) {
+    dataString = '{"jsonrpc":"2.0", "method":"condenser_api.get_content", "params":["' + localAuthor + '", "' + localPermlink + '"], "id":1}';
+    let options = {
+        url: url20,
+        method: 'POST',
+        body: dataString
+    }
+
+    return requestPromise(options)
+        .catch(function(error) {
+            console.log(error);
+        });
+}
+
+module.exports.getComment = getComment;
 
 
 
