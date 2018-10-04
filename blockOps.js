@@ -46,6 +46,7 @@ if (commandLine == 'setup') {
 } else if (commandLine == 'filloperations') {
     fillOperations();
 } else if (commandLine == 'reportcomments') {
+    // Market share reports on Steem applications
     reportComments();
 } else if (commandLine == 'reportblocks') {
     reportBlocks();
@@ -53,6 +54,8 @@ if (commandLine == 'setup') {
     findComments();
 } else if (commandLine == 'investigation') {
     investigation();
+} else if (commandLine == 'findcurator') {
+    findCurator();
 } else {
     // end
 }
@@ -254,10 +257,14 @@ async function fillOperations() {
     let blocksToProcess = 0;
     let blocksPerRound = 8; // x blocks called for processing at a time
     let unknownOperations = [];
+    let unknownVirtuals = [];
     let blockProcessNumber = 1000;
     let priorArrayCount = 0;
     let blocksOK = 0;
     let blockProcessArray = [];
+    let lastHour = 25;
+    let currentHour = 0;
+    let tokenFlag = false;
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     console.log(openBlock, closeBlock, parameterIssue);
@@ -283,15 +290,16 @@ async function fillOperations() {
                     console.log('blocksOK', blocksOK);
                 }
                 while (blockProcessArray.length == 0 && (blocksStarted + blocksOK < blocksToProcess));
+
+                // Reset operations counter in blocksProcessed for blocks being rerun
+                mongoblock.resetBlocksProcessed(db, blockProcessArray[0], blockProcessArray[blockProcessArray.length-1]);
             }
+
             if (blocksStarted + blocksOK < blocksToProcess) {
                 blockNo = blockProcessArray[blocksStarted - priorArrayCount];
-                console.log('----------------');
-                console.log('started ' + blockNo);
                 // Gets data for one block, processes it in callback "processOps"
                 steemrequest.getOpsAppBase(blockNo, processOps);
                 blocksStarted += 1;
-                console.log('----------------');
             } else {
                 console.log('break');
                 completeOperationsLoop()
@@ -306,14 +314,30 @@ async function fillOperations() {
         if (!error) {
             try {
                 let result = JSON.parse(body).result;
-                for (let operation of result) {
-                    // Extracts blockNumber and timestamp
-                    blockProcessed = operation.block;
-                    timestamp = operation.timestamp;
+                //console.dir(JSON.parse(body), {depth: null})
+                numberOfOps = result.length;
+                opsNotHandled = 0;
+                timestamp = result[result.length-1].timestamp;
+                currentHour = (new Date(timestamp + '.000Z')).getUTCHours();
+                // Sets flag for token price calculations for block at start of hour
+                if (currentHour != lastHour) {
+                    tokenFlag = true;
+                    lastHour = currentHour;
+                }
 
+                // Add record of block to blocksProcessed collection in database
+                let blockRecord = {blockNumber: localBlockNo, timestamp: timestamp, tokenFlag: tokenFlag, status: 'Processing', operationsCount: numberOfOps};
+                mongoblock.mongoBlockProcessed(db, blockRecord, 0);
+
+                for (let operation of result) {
                     if (operation.op[0] == 'comment') {
+                        //workComment(operation);
                         mongoblock.processComment(operation, mongoblock.mongoComment, db);
+                    } else if (operation.op[0] == 'vote') {
+                        mongoblock.processVote(operation, mongoblock.mongoVote, db);
                     } else if (operation.op[0] == 'author_reward') {
+                        mongoblock.validateComments(db, operation);
+                        activeVotes(operation);
                         mongoblock.processAuthorReward(operation, mongoblock.mongoAuthorReward, db);
                     } else if (operation.op[0] == 'comment_benefactor_reward') {
                         mongoblock.processBenefactorReward(operation, mongoblock.mongoBenefactorReward, db);
@@ -321,22 +345,17 @@ async function fillOperations() {
                         mongoblock.processCuratorReward(operation, mongoblock.mongoCuratorReward, db);
                     } else {
                         // Operations not handled:
-                        if (!unknownOperations.includes(operation.op[0])) {
-                            unknownOperations.push(operation.op[0]);
+                        opsNotHandled += 1;
+                        if (!unknownVirtuals.includes(operation.op[0])) {
+                            unknownVirtuals.push(operation.op[0]);
                         }
                     }
                 }
-                // Add record of block processed to database
-                let blockRecord = {blockNumber: blockProcessed, timestamp: timestamp, status: 'OK'};
-                //console.log('adding block ', blockProcessed);
-                db.collection('blocksProcessed').updateOne({ blockNumber: blockProcessed, status: {$ne : 'OK'}}, {$set: blockRecord}, {upsert: true}, (error, results) => { // Is this slowing the loop? To do - test it.
-                    if(error) { if(error.code != 11000) {console.log(error);}}
-                });
 
+                recordOperation = {transactionType: 'notHandled', count: opsNotHandled, status: 'OK'};
+                mongoblock.mongoOperationProcessed(db, localBlockNo, recordOperation, opsNotHandled, 0);
+                tokenFlag = false;
                 blocksCompleted += 1;
-                console.log('----------------');
-                console.log('finished ' + blockProcessed + ' (' + blocksCompleted + ')' );
-                console.log('----------------');
 
                 if (blocksCompleted  + blocksOK == blocksToProcess) {
                     completeOperationsLoop();
@@ -346,15 +365,18 @@ async function fillOperations() {
                 }
             } catch (error) {
                 console.log('blockNumber:', localBlockNo);
-                console.log(error);
+                console.log('Error in processing virtual ops');
+                //console.dir(JSON.parse(body), { depth: null });
+                console.log(error); // TO DO - update to register an error in the blocksProcessed collection rather than log error
             }
         } else {
-            console.log('Error in processing block:', localBlockNo);
+            console.log('Error in processing virtual ops:', localBlockNo);
             if (error.errno = 'ENOTFOUND') {
                 console.log('ENOTFOUND: Most likely error is connection lost.'); // to do: deal with checking which blocks loaded, reconnecting, and restarting loop.
             } else {
                 console.log(error);
             }
+
             let blockRecord = {blockNumber: localBlockNo, status: 'error'};
             db.collection('blocksProcessed').insertOne(blockRecord, (error, results) => {
                 if(error) { if(error.code != 11000) {console.log(error);}}
@@ -364,14 +386,27 @@ async function fillOperations() {
         }
     }
 
+    async function activeVotes(localOperation) {
+        let votesList = await steemrequest.getActiveVotes(localOperation.op[1].author, localOperation.op[1].permlink);
+        votesList = JSON.parse(votesList);
+        db.collection('blocksProcessed').updateOne({ blockNumber: localOperation.block, operations: { $elemMatch: { virtualOp: localOperation.virtual_op}}}, {$set: {"operations.$.activeVotesCount": votesList.result.length, "operations.$.activeVotesProcessed": 0}}, {upsert: false}, (error, results) => {
+            if (error) {
+                console.log(error);
+            }
+        });
+        for (let vote of votesList.result) {
+            mongoblock.processActiveVote(vote, localOperation.op[1].author, localOperation.op[1].permlink, localOperation.block, localOperation.virtual_op, mongoblock.mongoActiveVote, db);
+        }
+    }
+
+
     function completeOperationsLoop() {
         let runTime = Date.now() - launchTime;
         console.log('unknownOperations: ', unknownOperations);
         console.log('End time: ' + (Date.now() - launchTime));
         console.log('----------------');
         console.log('REPORT');
-        console.log('Start date: ', openDate);
-        console.log('Blocks covered: ', openBlock + ' to ' + closeBlock);
+        console.log('Blocks covered: ' + openBlock + ' to ' + closeBlock);
         console.log('Blocks processed: ' + blocksCompleted);
         console.log('Blocks previously processed: ' + blocksOK);
         console.log('Error Count: ' + errorCount);
@@ -392,7 +427,9 @@ async function blockRangeDefinition(db) {
 
     let openBlock = 0, closeBlock = 0, parameterIssue = false;
 
-    if (typeof parameter1 == 'string') {
+    if (!(isNaN(parameter1))) {
+        openBlock = Number(parameter1);
+    } else if (typeof parameter1 == 'string') {
         openDate = new Date(parameter1);
         openDateEnd = helperblock.forwardOneDay(openDate);
         openBlock = await mongoblock.dateToBlockNumber(openDate, openDateEnd, db)
@@ -491,6 +528,23 @@ async function investigation() {
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
         await mongoblock.investigationMongo(db, openBlock, closeBlock);
+    } else {
+        console.log('Parameter issue');
+    }
+}
+
+
+
+// TESTING STRUCTURE OF DATA - Finds a curator
+// -------------------------------------------
+async function findCurator() {
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        await mongoblock.findCuratorMongo(parameter3, db, openBlock, closeBlock);
     } else {
         console.log('Parameter issue');
     }
