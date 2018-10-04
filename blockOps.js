@@ -264,9 +264,6 @@ async function fillOperations() {
     let priorArrayCount = 0;
     let blocksOK = 0;
     let blockProcessArray = [];
-    let lastHour = 25;
-    let currentHour = 0;
-    let tokenFlag = false;
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     console.log(openBlock, closeBlock, parameterIssue);
@@ -319,16 +316,10 @@ async function fillOperations() {
                 //console.dir(JSON.parse(body), {depth: null})
                 numberOfOps = result.length;
                 opsNotHandled = 0;
-                timestamp = result[result.length-1].timestamp;
-                currentHour = (new Date(timestamp + '.000Z')).getUTCHours();
-                // Sets flag for token price calculations for block at start of hour
-                if (currentHour != lastHour) {
-                    tokenFlag = true;
-                    lastHour = currentHour;
-                }
+                timestamp = new Date(result[result.length-1].timestamp + '.000Z');
 
                 // Add record of block to blocksProcessed collection in database
-                let blockRecord = {blockNumber: localBlockNo, timestamp: timestamp, tokenFlag: tokenFlag, status: 'Processing', operationsCount: numberOfOps};
+                let blockRecord = {blockNumber: localBlockNo, timestamp: timestamp, status: 'Processing', operationsCount: numberOfOps};
                 mongoblock.mongoBlockProcessed(db, blockRecord, 0);
 
                 for (let operation of result) {
@@ -356,13 +347,12 @@ async function fillOperations() {
 
                 recordOperation = {transactionType: 'notHandled', count: opsNotHandled, status: 'OK'};
                 mongoblock.mongoOperationProcessed(db, localBlockNo, recordOperation, opsNotHandled, 0);
-                tokenFlag = false;
                 blocksCompleted += 1;
 
                 if (blocksCompleted  + blocksOK == blocksToProcess) {
                     completeOperationsLoop();
 
-                } else if (blocksStarted - blocksCompleted < 5) {
+                } else if (blocksStarted - blocksCompleted < 4) {
                     fiveBlock();
                 }
             } catch (error) {
@@ -432,7 +422,7 @@ async function blockRangeDefinition(db) {
     if (!(isNaN(parameter1))) {
         openBlock = Number(parameter1);
     } else if (typeof parameter1 == 'string') {
-        openDate = new Date(parameter1);
+        openDate = new Date(parameter1 + 'T00:00:00.000Z');
         openDateEnd = helperblock.forwardOneDay(openDate);
         openBlock = await mongoblock.dateToBlockNumber(openDate, openDateEnd, db)
             .catch(function(error) {
@@ -446,7 +436,7 @@ async function blockRangeDefinition(db) {
     if (!(isNaN(parameter2))) {
         closeBlock = openBlock + Number(parameter2);
     } else if (typeof parameter2 == 'string') {
-        closeDate = new Date(parameter2);
+        closeDate = new Date(parameter2 + 'T00:00:00.000Z');
         closeDateEnd = helperblock.forwardOneDay(closeDate);
         closeBlock = await mongoblock.dateToBlockNumber(closeDate, closeDateEnd, db)
             .catch(function(error) {

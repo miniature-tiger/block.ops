@@ -45,14 +45,30 @@ module.exports.dateToBlockNumber = dateToBlockNumber;
 // ---------------------------------------------
 function processComment(operation, mongoComment, db) {
     let appName = '', appVersion = '';
+    let msecondsInSevenDays = 604800000;
+    let commentTimestamp = new Date(operation.timestamp + '.000Z');
+
     try {
         // need to update for parley
         [appName, appVersion] = JSON.parse(operation.op[1].json_metadata).app.split('/');
     } catch(error) {
         // there are lots of errors - refine app derivation for null cases etc
     }
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, blockNumber: operation.block, timestamp: operation.timestamp, transactionNumber: operation.trx_in_block, transactionType: 'commentUnverified', application: appName, applicationVersion: appVersion};
-    mongoComment(db, record, operation, 0);
+
+    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, blockNumber: operation.block, timestamp: commentTimestamp,
+                    transactionNumber: operation.trx_in_block, transactionType: 'commentUnverified', application: appName, applicationVersion: appVersion};
+    // Self-validation of original comments using 7 day payout period
+    db.collection('comments').find({ author: operation.op[1].author, permlink: operation.op[1].permlink, operations: 'author_reward'}).toArray()
+        .then(function(commentArray) {
+            if(commentArray.length > 0) {
+                if (commentArray[0].payout_timestamp - commentTimestamp == msecondsInSevenDays) {
+                    record.transactionType = 'commentOriginal';
+                } else {
+                    record.transactionType = 'commentEdit';
+                }
+            }
+            mongoComment(db, record, operation, 0);
+        });
 }
 
 module.exports.processComment = processComment;
@@ -109,7 +125,7 @@ module.exports.mongoComment = mongoComment;
 // Vote - processing of block operation
 // ---------------------------------------------
 function processVote(operation, mongoVote, db) {
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, voter: operation.op[1].voter, percent: Number((operation.op[1].weight/100).toFixed(0)), vote_timestamp: operation.timestamp, vote_blockNumber: operation.block, transactionNumber: operation.trx_in_block, transactionType: operation.op[0]};
+    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, voter: operation.op[1].voter, percent: Number((operation.op[1].weight/100).toFixed(0)), vote_timestamp: new Date(operation.timestamp + '.000Z'), vote_blockNumber: operation.block, transactionNumber: operation.trx_in_block, transactionType: operation.op[0]};
     mongoVote(db, record, 0);
 }
 
@@ -168,7 +184,7 @@ module.exports.mongoVote = mongoVote;
 // ----------------------------------------------------------------------------
 function processActiveVote(localVote, localAuthor, localPermlink, localBlockNumber, localVirtualOp, mongoActiveVote, db) {
     let formatVote = {voter: localVote.voter, curation_weight: localVote.weight, rshares: Number(localVote.rshares),
-                              percent: Number((localVote.percent/100).toFixed(2)), reputation: Number(localVote.reputation), vote_timestamp: localVote.time}
+                              percent: Number((localVote.percent/100).toFixed(2)), reputation: Number(localVote.reputation), vote_timestamp: new Date(localVote.time + '.000Z')}
     let record = {author: localAuthor, permlink: localPermlink, activeVote: formatVote};
     mongoActiveVote(db, localBlockNumber, localVirtualOp, record, 0);
 }
@@ -241,7 +257,9 @@ module.exports.mongoActiveVote = mongoActiveVote;
 // Author Reward - processing of block operation
 // ---------------------------------------------
 function processAuthorReward(operation, mongoAuthorReward, db) {
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, author_payout: {sbd: Number(operation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(operation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(operation.op[1].vesting_payout.split(' ', 1)[0])}, payout_blockNumber: operation.block, payout_timestamp: operation.timestamp };
+    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink,
+                    author_payout: {sbd: Number(operation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(operation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(operation.op[1].vesting_payout.split(' ', 1)[0])},
+                    payout_blockNumber: operation.block, payout_timestamp: new Date(operation.timestamp + '.000Z') };
     mongoAuthorReward(db, record, operation.virtual_op, 0);
 }
 
@@ -281,8 +299,9 @@ module.exports.mongoAuthorReward = mongoAuthorReward;
 // Benefactor Reward - processing of block operation
 // -------------------------------------------------
 function processBenefactorReward(operation, mongoBenefactorReward, db) {
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, benefactor: operation.op[1].benefactor, benefactor_timestamp: operation.timestamp,
-                          benefactor_payout: {sbd: Number(operation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(operation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(operation.op[1].vesting_payout.split(' ', 1)[0])}, virtualOp: operation.virtual_op, payout_blockNumber: operation.block};
+    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, benefactor: operation.op[1].benefactor, benefactor_timestamp: new Date(operation.timestamp + '.000Z'),
+                          benefactor_payout: {sbd: Number(operation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(operation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(operation.op[1].vesting_payout.split(' ', 1)[0])},
+                          virtualOp: operation.virtual_op, payout_blockNumber: operation.block};
     mongoBenefactorReward(db, record, 0);
 }
 
@@ -336,7 +355,8 @@ module.exports.mongoBenefactorReward = mongoBenefactorReward;
 // Curator Reward - processing of block operation
 // -------------------------------------------------
 function processCuratorReward(operation, mongoCuratorReward, db) {
-    let record = {author: operation.op[1].comment_author, permlink: operation.op[1].comment_permlink, voter: operation.op[1].curator, reward_timestamp: operation.timestamp, curator_payout: {vests: Number(operation.op[1].reward.split(' ', 1)[0])}, virtualOp: operation.virtual_op, payout_blockNumber: operation.block};
+    let record = {author: operation.op[1].comment_author, permlink: operation.op[1].comment_permlink, voter: operation.op[1].curator, reward_timestamp: new Date(operation.timestamp + '.000Z'),
+                  curator_payout: {vests: Number(operation.op[1].reward.split(' ', 1)[0])}, virtualOp: operation.virtual_op, payout_blockNumber: operation.block};
     mongoCuratorReward(db, record, 0);
 }
 
@@ -468,6 +488,7 @@ module.exports.mongoOperationProcessed = mongoOperationProcessed;
 // ----------------------------------------------------------------------------------------------
 function validateComments(db, localOperation) {
     let msecondsInSevenDays = 604800000;
+    let payoutDate = new Date(localOperation.timestamp + '.000Z');
     // Find document in comments based on author / permlink
     db.collection('comments').find(
         {author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, operations: 'comment'}
@@ -475,7 +496,7 @@ function validateComments(db, localOperation) {
     .then(function(commentArray) {
         if(commentArray.length > 0) {
             // Check if difference between document timestamp and author payout timestamp is 7 days
-            if (new Date(localOperation.timestamp) - new Date(commentArray[0].timestamp) == msecondsInSevenDays) {
+            if (payoutDate - commentArray[0].timestamp == msecondsInSevenDays) {
                 // Change comment transactionType to 'commentOriginal'
                 db.collection('comments').updateOne({ author: localOperation.op[1].author, permlink: localOperation.op[1].permlink}, {$set: {transactionType: 'commentOriginal'}}, {upsert: false})
                     .catch(function(error) {
@@ -483,13 +504,13 @@ function validateComments(db, localOperation) {
                     });
             } else {
                 // Change comment transactionType to 'commentEdit'
-                db.collection('comments').updateOne({ author: localOperation.op[1].author, permlink: localOperation.op[1].permlink}, {$set: {transactionType: 'commentOriginal'}}, {upsert: false})
+                db.collection('comments').updateOne({ author: localOperation.op[1].author, permlink: localOperation.op[1].permlink}, {$set: {transactionType: 'commentEdit'}}, {upsert: false})
                     .catch(function(error) {
                         console.log(error);
                     });
             }
         } else {
-            // No comment found - add note for future comments added so that immediately verify?
+            // No 'expectedCreation' date required - comment operations are validated against any pre-existing author_payout operations in function processComment
         }
     });
 }
@@ -507,7 +528,7 @@ async function mongoFillPrices(db, openBlock, closeBlock) {
                       {operations: 'author_reward'},
                       {payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
                     ]}},
-        { $project : {_id: 0, dateObject: {$dateToParts: {date: {$dateFromString: {dateString: "$payout_timestamp"}}}}, "curator_payout.vests": 1, "author_payout.steem": 1, "author_payout.sbd": 1, "author_payout.vests": 1, rshares: 1, author: 1, permlink: 1, payout_blockNumber: 1 }},
+        { $project : {_id: 0, dateObject: {$dateToParts: {date: "$payout_timestamp"}}, "curator_payout.vests": 1, "author_payout.steem": 1, "author_payout.sbd": 1, "author_payout.vests": 1, rshares: 1, author: 1, permlink: 1, payout_blockNumber: 1 }},
         { $match :  {$and:[
                       {"dateObject.minute": { $gte: 29, $lte: 30}},
                       //{"dateObject.second": { $gte: 0, $lte: 59}},
@@ -768,14 +789,15 @@ function investigationMongo(db, openBlock, closeBlock) {
     db.collection('comments').find(
         {$and : [
             { blockNumber: { $gte: openBlock, $lt: closeBlock }},
-            { curators: {$exists : true}},
+            { operations: 'curator_payout'},
+            { operations: 'comment'},
         ]}).sort({author:1}).toArray()
         .then(function(details) {
             let i = 0, counter = 0, max = 0;
             console.log(details.length + ' records')
             for (let comment of details) {
                 for (let indiv of comment.curators) {
-                    let differential = (new Date(indiv.timestamp) - new Date(comment.timestamp)) - (7*24*60*60*1000);
+                    let differential = (indiv.timestamp - comment.timestamp) - (7*24*60*60*1000);
                     if (differential != 0) {
                         console.log(differential);
                         console.log(comment);
