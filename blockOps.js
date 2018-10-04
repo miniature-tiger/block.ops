@@ -45,6 +45,8 @@ if (commandLine == 'setup') {
     checkAllBlockDates();
 } else if (commandLine == 'filloperations') {
     fillOperations();
+} else if (commandLine == 'fillprices') {
+    fillPrices();
 } else if (commandLine == 'reportcomments') {
     // Market share reports on Steem applications
     reportComments();
@@ -459,6 +461,83 @@ async function blockRangeDefinition(db) {
 }
 
 
+// Function to fill prices collection
+// ----------------------------------
+async function fillPrices() {
+    let pricesArray = [];
+    // Connect to Mongo
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    // Check prices index exists
+    let checkCp = await mongoblock.checkCollectionExists(db, 'prices');
+    if (checkCp == false) {
+        db.collection('prices').createIndex({payout_blockNumber: 1}, {unique:true});
+    }
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        // Select a comment from each hour (around the 30 minute mark)
+        pricesArray = await mongoblock.mongoFillPrices(db, openBlock, closeBlock);
+
+        // Skip prices that have previously been inserted to prices collection
+        let previousPrices = await db.collection('prices')
+            .find({payout_blockNumber: { $gte: openBlock, $lt: closeBlock }})
+            .project({_id: 0, date: 1})
+            .toArray();
+
+        let countSkips = 0;
+        for (let comment of pricesArray) {
+            priorFlag = false;
+            for (let priorDate of previousPrices) {
+                if (comment._id.year == priorDate.date.year && comment._id.month == priorDate.date.month && comment._id.day == priorDate.date.day && comment._id.hour == priorDate.date.hour) {
+                    priorFlag = true;
+                }
+            }
+
+            if (priorFlag == true) {
+                // Skips record
+                countSkips += 1;
+            } else {
+                // Pulls record and calculates currency rations using payout data from operations (vests, sbd, steem) and payout data from post (STU)
+                await steemrequest.getComment(comment.author, comment.permlink)
+                    .then(async function(body) {
+                        result = JSON.parse(body).result;
+                        comment.date = comment._id;
+                        delete comment._id;
+                        comment.curator_payout_vests = Number(comment.curator_payout_vests.toFixed(6));
+                        comment.curator_payout_value = Number(result.curator_payout_value.split(' ', 1)[0]);
+                        comment.author_payout_value = Number(result.total_payout_value.split(' ', 1)[0]);
+                        comment.beneficiaries_payout_value = 0;
+                        comment.total_payout_value = Number((comment.curator_payout_value + comment.author_payout_value).toFixed(3));
+                        beneficiariesSum = 0;
+                        if (result.beneficiaries.length > 0) {
+                            for (var i = 0; i < result.beneficiaries.length; i+=1) {
+                                beneficiariesSum += result.beneficiaries[i].weight;
+                            }
+                            comment.total_payout_value = Number(((comment.author_payout_value / (1-(beneficiariesSum/10000))) + comment.curator_payout_value).toFixed(3));
+                            comment.beneficiaries_payout_value = Number((comment.total_payout_value - comment.author_payout_value - comment.curator_payout_value).toFixed(3));
+                        }
+                        comment.vestsPerSTU = Number((comment.curator_payout_vests / comment.curator_payout_value).toFixed(3));
+                        comment.rsharesPerSTU = Number((comment.rshares / comment.total_payout_value).toFixed(3));
+                        comment.steemPerSTU = 0;
+                        if (comment.author_payout_steem > 0) {
+                            comment.steemPerSTU = Number((comment.author_payout_steem / (comment.author_payout_value - comment.author_payout_sbd - (comment.author_payout_vests/comment.vestsPerSTU))).toFixed(3));
+                        }
+                        await mongoblock.mongoPrice(db, comment, 0);
+                })
+            }
+        }
+        console.log(countSkips + ' record skips as already exits in prices collection.')
+        console.log('closing mongo db');
+        client.close();
+    } else {
+        console.log('Parameter issue');
+    }
+}
+
+
 // Function to provide parameters for reportBlocksProcessed
 // --------------------------------------------------------
 async function reportBlocks() {
@@ -473,7 +552,6 @@ async function reportBlocks() {
         console.log('Parameter issue');
     }
 }
-
 
 
 // Function to provide parameters for findCommentsMongo

@@ -181,11 +181,12 @@ module.exports.processActiveVote = processActiveVote;
 // ---------------------------------------------
 function mongoActiveVote(db, activeBlockNumber, activeVirtualOp, localRecord, reattempt) {
     let maxReattempts = 1;
+
     db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.activeVote.voter}).toArray()
         .then(function(result) {
             // Adds all vote details to curation set if author / permlink / voter combination not found
             if(result.length === 0) {
-                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$addToSet: {curators: localRecord.activeVote, operations: 'active_votes'}}, {upsert: true})
+                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$inc: {"rshares": localRecord.activeVote.rshares}, $addToSet: {curators: localRecord.activeVote, operations: 'active_votes'}}, {upsert: true})
                     .then(function(response) {
                         db.collection('blocksProcessed').updateOne({ blockNumber: activeBlockNumber, operations: { $elemMatch: { virtualOp: activeVirtualOp}}}, {$inc: {"operations.$.activeVotesProcessed": 1}}, {upsert: false}, (error, results) => {
                             if(error) {
@@ -206,22 +207,29 @@ function mongoActiveVote(db, activeBlockNumber, activeVirtualOp, localRecord, re
                             console.log(error);
                         }
                     });
+
             // Updates existing vote details for voter in curation array if author / permlink / voter combination is found
             } else {
-                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.activeVote.voter}}},
-                              {$set: {"curators.$.voter": localRecord.activeVote.voter, "curators.$.curation_weight": localRecord.activeVote.curation_weight, "curators.$.rshares": localRecord.activeVote.rshares,
-                                "curators.$.percent": localRecord.activeVote.percent, "curators.$.reputation": localRecord.activeVote.reputation, "curators.$.vote_timestamp": localRecord.activeVote.vote_timestamp},
-                                $addToSet: {operations: 'active_votes'}}, {upsert: false})
-                    .then(function(response) {
-                        db.collection('blocksProcessed').updateOne({ blockNumber: activeBlockNumber, operations: { $elemMatch: { virtualOp: activeVirtualOp}}}, {$inc: {"operations.$.activeVotesProcessed": 1}}, {upsert: false}, (error, results) => {
-                            if(error) {
-                                console.log(error);
-                            }
+                // No previous insert in Mongo for this active vote; entry was from vote or curation reward operations
+                let arrayPosition = result[0].curators.findIndex(fI => fI.voter == localRecord.activeVote.voter);
+                if(!(result[0].curators[arrayPosition].hasOwnProperty('rshares'))) {
+                    db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.activeVote.voter}}},
+                                  {$inc: {"rshares": localRecord.activeVote.rshares}, $set: {"curators.$.voter": localRecord.activeVote.voter, "curators.$.curation_weight": localRecord.activeVote.curation_weight, "curators.$.rshares": localRecord.activeVote.rshares,
+                                    "curators.$.percent": localRecord.activeVote.percent, "curators.$.reputation": localRecord.activeVote.reputation, "curators.$.vote_timestamp": localRecord.activeVote.vote_timestamp},
+                                    $addToSet: {operations: 'active_votes'}}, {upsert: false})
+                        .then(function(response) {
+                            db.collection('blocksProcessed').updateOne({ blockNumber: activeBlockNumber, operations: { $elemMatch: { virtualOp: activeVirtualOp}}}, {$inc: {"operations.$.activeVotesProcessed": 1}}, {upsert: false}, (error, results) => {
+                                if(error) {
+                                    console.log(error);
+                                }
+                            });
+                        })
+                        .catch(function(error) {
+                              console.log('Error: active_vote', localRecord.activeVote.voter);
                         });
-                    })
-                    .catch(function(error) {
-                          console.log('Error: active_vote', localRecord.activeVote.voter);
-                    });
+                } else {
+                    // Previous insert in Mongo for this active vote; double operation or rerun - need to skip to avoid double counting in $inc
+                }
             }
         })
 }
@@ -246,7 +254,7 @@ module.exports.processAuthorReward = processAuthorReward;
 function mongoAuthorReward(db, localRecord, virtualOp, reattempt) {
     // Uses upsert - blocks may be processed in any order so author/permlink record may already exist if another operation is processed first
     let maxReattempts = 1;
-    db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$set: localRecord, $addToSet: {operations: 'author_payout'}}, {upsert: true})
+    db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$set: localRecord, $addToSet: {operations: 'author_reward'}}, {upsert: true})
         .then(function(response) {
             recordOperation = {virtualOp: virtualOp, transactionType: 'author_reward', status: 'OK'};
             mongoOperationProcessed(db, localRecord.payout_blockNumber, recordOperation, 1, 0);
@@ -340,6 +348,7 @@ module.exports.processCuratorReward = processCuratorReward;
 // -----------------------------------------------
 function mongoCuratorReward(db, localRecord, reattempt) {
     let maxReattempts = 1;
+    let recordOperation = {virtualOp: localRecord.virtualOp, transactionType: 'curator_reward', status: 'OK'};
     db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.voter}).toArray()
         .then(function(result) {
             // Adds all vote details to curation set if author / permlink / voter combination not found
@@ -347,7 +356,6 @@ function mongoCuratorReward(db, localRecord, reattempt) {
                 db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$inc: {"curator_payout.vests": localRecord.curator_payout.vests},
                                                         $addToSet: {curators: {voter: localRecord.voter, vests: localRecord.curator_payout.vests, reward_timestamp: localRecord.reward_timestamp}, operations: 'curator_payout'}}, {upsert: true})
                     .then(function(response) {
-                        recordOperation = {virtualOp: localRecord.virtualOp, transactionType: 'curator_reward', status: 'OK'};
                         mongoOperationProcessed(db, localRecord.payout_blockNumber, recordOperation, 1, 0);
                     })
                     .catch(function(error) {
@@ -365,16 +373,22 @@ function mongoCuratorReward(db, localRecord, reattempt) {
                     });
             // Updates existing vote details for voter in curation array if author / permlink / voter combination is found
             } else {
-                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.voter}}},
-                              {$set: {"curators.$.voter": localRecord.voter, "curators.$.vests": localRecord.curator_payout.vests, "curators.$.reward_timestamp": localRecord.reward_timestamp},
-                                $addToSet: {operations: 'curator_payout'}}, {upsert: false})
-                    .then(function(response) {
-                        recordOperation = {virtualOp: localRecord.virtualOp, transactionType: 'curator_reward', status: 'OK'};
-                        mongoOperationProcessed(db, localRecord.payout_blockNumber, recordOperation, 1, 0);
-                    })
-                    .catch(function(error) {
-                          console.log('Error: curator_payout', localRecord.voter);
-                    });
+                // No previous insert in Mongo for this curation reward; entry was from vote or active vote operations
+                let arrayPosition = result[0].curators.findIndex(fI => fI.voter == localRecord.voter);
+                if(!(result[0].curators[arrayPosition].hasOwnProperty('vests'))) {
+                    db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.voter}}},
+                                  {$inc: {"curator_payout.vests": localRecord.curator_payout.vests}, $set: {"curators.$.voter": localRecord.voter, "curators.$.vests": localRecord.curator_payout.vests, "curators.$.reward_timestamp": localRecord.reward_timestamp},
+                                    $addToSet: {operations: 'curator_payout'}}, {upsert: false})
+                        .then(function(response) {
+                            mongoOperationProcessed(db, localRecord.payout_blockNumber, recordOperation, 1, 0);
+                        })
+                        .catch(function(error) {
+                              console.log('Error: curator_payout', localRecord.voter);
+                        });
+                // Previous insert in Mongo for this curation reward; double operation or rerun - need to skip to avoid double counting in $inc
+                } else {
+                    mongoOperationProcessed(db, localRecord.payout_blockNumber, recordOperation, 1, 0);
+                }
             }
         })
 }
@@ -481,6 +495,64 @@ function validateComments(db, localOperation) {
 }
 
 module.exports.validateComments = validateComments;
+
+
+
+// Function to find comments for currency exchange calculations on each hour
+// -------------------------------------------------------------------------
+async function mongoFillPrices(db, openBlock, closeBlock) {
+    console.log(openBlock, closeBlock)
+    return db.collection('comments').aggregate([
+        { $match :  {$and:[
+                      {operations: 'author_reward'},
+                      {payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                    ]}},
+        { $project : {_id: 0, dateObject: {$dateToParts: {date: {$dateFromString: {dateString: "$payout_timestamp"}}}}, "curator_payout.vests": 1, "author_payout.steem": 1, "author_payout.sbd": 1, "author_payout.vests": 1, rshares: 1, author: 1, permlink: 1, payout_blockNumber: 1 }},
+        { $match :  {$and:[
+                      {"dateObject.minute": { $gte: 29, $lte: 30}},
+                      //{"dateObject.second": { $gte: 0, $lte: 59}},
+                      {"curator_payout.vests": { $gt: 0}}
+                    ]}},
+        { $sort: {"dateObject.year": 1, "dateObject.month": 1, "dateObject.day": 1, "dateObject.hour": 1, "author_payout.steem": -1, "curator_payout.vests": -1}},
+        { $group : {_id: {year: "$dateObject.year", month: "$dateObject.month", day: "$dateObject.day", hour: "$dateObject.hour"},
+                          author: {$first: "$author"},
+                          permlink: {$first: "$permlink"},
+                          payout_blockNumber: {$first: "$payout_blockNumber"},
+                          author_payout_steem: {$first: "$author_payout.steem"},
+                          author_payout_sbd: {$first: "$author_payout.sbd"},
+                          author_payout_vests: {$first: "$author_payout.vests"},
+                          curator_payout_vests: {$first: "$curator_payout.vests"},
+                          rshares: {$first: "$rshares"},
+                  }},
+        { $sort: {payout_blockNumber: 1}}
+        ]).toArray();
+}
+
+module.exports.mongoFillPrices = mongoFillPrices;
+
+
+
+// Function to add price information to Mongo prices collection
+// -------------------------------------------------------------------------
+function mongoPrice(db, localRecord, reattempt) {
+    let maxReattempts = 1;
+    return db.collection('prices').insertOne(localRecord)
+        .catch(function(error) {
+            if(error.code == 11000) {
+                if (reattempt < maxReattempts) {
+                    console.log('E11000 error with <', localRecord.payout_blockNumber, '> mongoBlockProcessed. Re-attempting...');
+                    mongoPrice(db, localRecord, 1)
+                } else {
+                    console.log('E11000 error with <', localRecord.payout_blockNumber, '> mongoBlockProcessed. Maximum reattempts surpassed.');
+                }
+            } else {
+                console.log('Non-standard error with <', localRecord.payout_blockNumber, '> mongoBlockProcessed.');
+                console.log(error);
+            }
+    });
+}
+
+module.exports.mongoPrice = mongoPrice;
 
 
 
@@ -664,13 +736,14 @@ module.exports.resetBlocksProcessed = resetBlocksProcessed;
 // Function lists comments for an application to give an idea of comment structure
 // -------------------------------------------------------------------------------
 function findCommentsMongo(localApp, db, openBlock, closeBlock) {
+    console.log(openBlock, closeBlock)
     db.collection('comments').find(
 
         {$and : [
-            { blockNumber: { $gte: openBlock, $lt: closeBlock }},
-            {operations: 'comment'},
+            { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
+            //{operations: 'comment'},
             //{operations: 'vote'},
-            //{operations: 'author_payout'},
+            {operations: 'author_reward'},
         ]}
 
     ).toArray()
@@ -733,7 +806,7 @@ function findCuratorMongo(voter, db, openBlock, closeBlock) {
     let steemPerVests = 0.00049495; // Temporary while indexes are built for all the various currencies and measures!
     let rsharesToVoteValue = 867700000000; // Temporary while indexes are built for all the various currencies and measures!
     console.log(openBlock, closeBlock, voter);
-    let minRshares = 100000000000; // 100bn
+    let minRshares = 50000000000; // 50bn
 
     // If no account name is chosen then all ratios are examined for all users and the top ones logged
     if (voter == undefined) {
