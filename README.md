@@ -11,7 +11,7 @@ Block.Ops requires Node.js, npm, and MongoDB. If you do not already have these p
 Production testing used Node.js v10.9.0 (this 'Latest Features' version is required) and MongoDB version v4.0.0. Run on macOS High Sierra.
 
 ### Block.Ops files
-* Download all files to your local computer using the "Clone of download" ---> "Download ZIP" buttons on the block.ops repository of github. **[PLEASE USE THE LATEST FORK WHICH INCLUDES A PATCH FOLLOWING THE HF20 ISSUES YESTERDAY]**
+* Download all files to your local computer using the "Clone of download" ---> "Download ZIP" buttons on the block.ops repository of github. 
 * Move the downloaded files to the directory of your choice.
 
 ### npm module installations
@@ -30,51 +30,73 @@ Block.Ops is run with node.js via the command line.
 * Test succesful setup of blockDates list => $ node blockOps checkBlockDates
 
 ### Block.Ops functions
+
+##### Processing
+
 Once the blocknumber index has been created the following commands can be used for Block.Ops functionality:
 $ node blockOps ...
 
-* filloperations < date > < date or number of blocks > 
+* filloperations < date or block number > < date or number of blocks > 
 
-  e.g. $ node blockOps filloperations "2018-09-03" 10
+  e.g. $ node blockOps filloperations "2018-09-03" 10   --->   processes the first 10 blocks of 3rd September
+  e.g. $ node blockOps filloperations 20000000 10   --->   processes 10 blocks starting with block number 20million
+  
+Runs through loop of blocks (starting from first block of first date parameter) to analyse operations and add the data to MongoDB.
+  
+* reportblocks < date or block number > < date or number of blocks > 
+  
+  e.g. $ node blockOps reportblocks "2018-09-02" "2018-09-04"
+  
+Reports on status of blocks processed for date range. Blocks can have three different statuses: 'OK', error', or 'processing' (the latter means that the block failed to finish adding all the operations and complete validation).
 
-Runs through loop of blocks (starting from first block of first date parameter) to analyse operations and add to MongoDB
-  
-* reportblocks < date > < date or number of blocks > 
-  
-  e.g. $ node blockOps reportblocks "2018-09-02" 1200
-  
-  Reports on status of blocks processed for date range 
-  
-* reportcomments  
-  
-  Reports on post numbers per application (currently for all blocks processed)
-  
 * remove < nameOfCollectionToRemove >
   
-  Removes all records from a collection (handle with care!)
+Removes all records from a collection **(handle with care!)**.
+
+
+##### Analyses
+
+* reportcomments < date or block number > < date or number of blocks >  
+  
+Reports on post numbers per application (currently for all blocks processed)
+  
+* findcurator < date or block number > < date or number of blocks > < user >
+  
+Reports on ratio of vests to rshares (i.e. vote payout to vote size) and finds highest ratios (i.e. best curation reward).
+Adding a user name returns only those votes from the individual user.
 
 ----------------------------------------------
 
-## Road map:
+## Road map: (still fluid!)
+
+1) Complete the code for processing of blocks / operations
+2) Complete fx functionality
+3) Consider analyses to be included
+4) Add a user-friendly front-end
+5) Add charts
+6) Realtime / forward processing
+
 
 ### Short term
-* Add date range to reportcomments
+* Add date range to reportcomments - COMPLETE
 * Include chosen operations in filloperations to allow marketshare analysis to be run 
-  (needs author numbers and author, curator and benefactor payout numbers)
+  (needs author numbers and author, curator and benefactor payout numbers) - COMPLETE
 * Consider other operations to be analysed from the list below:
   
   Definitely need:
-  'author_reward',
-  'curation_reward',
-  'comment_benefactor_reward',
+  'author_reward' - ADDED
+  'curation_reward' - ADDED
+  'comment_benefactor_reward' - ADDED
   
   Likely to include:
-  'vote',
+  'vote' - ADDED
   'custom_json',
+  'transfer',
+  'return_vesting_delegation',
+  'delegate_vesting_shares',
   
   For consideration:
   
-  'transfer',
   'claim_reward_balance',
   'transfer_to_vesting',
   'transfer_to_savings',
@@ -83,9 +105,6 @@ Runs through loop of blocks (starting from first block of first date parameter) 
   'producer_reward',
   'account_witness_vote',
   'account_witness_proxy',
-
-  'return_vesting_delegation',
-  'delegate_vesting_shares',
   
   'fill_vesting_withdraw',
   'withdraw_vesting',
@@ -94,12 +113,12 @@ Runs through loop of blocks (starting from first block of first date parameter) 
   'comment_options',
   'account_update',
   
+  'account_create',
+  'account_create_with_delegation',
+  
   'limit_order_cancel',
   'limit_order_create',
   'fill_order',
-  
-  'account_create',
-  'account_create_with_delegation',
   
   'delete_comment'
   
