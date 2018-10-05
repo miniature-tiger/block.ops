@@ -47,16 +47,39 @@ function processComment(operation, mongoComment, db) {
     let appName = '', appVersion = '';
     let msecondsInSevenDays = 604800000;
     let commentTimestamp = new Date(operation.timestamp + '.000Z');
+    let json = {};
 
-    try {
-        // need to update for parley
-        [appName, appVersion] = JSON.parse(operation.op[1].json_metadata).app.split('/');
-    } catch(error) {
-        // there are lots of errors - refine app derivation for null cases etc
+    // Parsing application / version data
+    if (operation.op[1].hasOwnProperty('json_metadata')) {
+        try {
+            json = JSON.parse(operation.op[1].json_metadata);
+        } catch(error) {
+            [appName, appVersion] = ['other', 'badJson']
+        }
+        if (json.hasOwnProperty('app')) {
+            if (json.app.hasOwnProperty('name')) { // parley
+                appName = json.app.name;
+            } else {
+                [appName, appVersion] = json.app.split('/');
+            }
+        } else {
+            [appName, appVersion] = ['other', 'noApp']
+        }
+    } else {
+        [appName, appVersion] = ['other', 'noJson']
     }
 
+    // Basic depth measure (post or comment)
+    if (operation.op[1].parent_author == '') {
+        postComment = 0;
+    } else {
+        postComment = 1;
+    }
+
+    // Setting record if no author_payout (i.e. blocks running forwards)
     let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, blockNumber: operation.block, timestamp: commentTimestamp,
-                    transactionNumber: operation.trx_in_block, transactionType: 'commentUnverified', application: appName, applicationVersion: appVersion};
+                    transactionNumber: operation.trx_in_block, transactionType: 'commentUnverified', application: appName, applicationVersion: appVersion, postComment: postComment};
+
     // Self-validation of original comments using 7 day payout period
     db.collection('comments').find({ author: operation.op[1].author, permlink: operation.op[1].permlink, operations: 'author_reward'}).toArray()
         .then(function(commentArray) {

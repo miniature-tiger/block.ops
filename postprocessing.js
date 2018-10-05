@@ -14,7 +14,7 @@ function marketShareProcessing(summary) {
         summary[i].benefactor_payout_vests = Number(summary[i].benefactor_payout_vests.toFixed(6));
         summary[i].curator_payout_vests = Number(summary[i].curator_payout_vests.toFixed(6));
 
-        if (summary[i].application == '' || summary[i].application == ' ' || summary[i].application == null || summary[i].application == "null") {
+        if (summary[i].application == '' || summary[i].application == ' ' || summary[i].application == null || summary[i].application == "null" || summary[i].application == "other") {
             otherData.authors += summary[i].authors;
             otherData.posts += summary[i].posts;
             otherData.author_payout_sbd += summary[i].author_payout_sbd;
