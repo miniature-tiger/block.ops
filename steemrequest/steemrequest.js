@@ -168,7 +168,7 @@ function getActiveVotes(localAuthor, localPermlink) {
 
     return requestPromise(options)
         .catch(function(error) {
-            console.log(error); // TO DO - update to register an error in the blocksProcessed collection rather than log error
+            console.log('Error in steemrequest.getActiveVotes:', 'Error name:',  error.name, 'Error message:', error.message, 'API params:', error.options.body); 
         });
 }
 

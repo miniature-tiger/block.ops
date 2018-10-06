@@ -57,8 +57,13 @@ function processComment(operation, mongoComment, db) {
             [appName, appVersion] = ['other', 'badJson']
         }
         if (json.hasOwnProperty('app')) {
-            if (json.app.hasOwnProperty('name')) { // parley
+            if (json.app == null) {
+                [appName, appVersion] = ['other', 'nullApp']
+            } else if (json.app.hasOwnProperty('name')) { // parley
                 appName = json.app.name;
+            } else if (json.app instanceof Array) { // cryptoowls
+                console.log(json.app, typeof json.app, json.app instanceof Array)
+                appName = json.app[0];
             } else {
                 [appName, appVersion] = json.app.split('/');
             }
@@ -443,11 +448,17 @@ module.exports.mongoCuratorReward = mongoCuratorReward;
 
 // Initialisation of blocksProcessed documents for each block and handling of reprocessed blocks
 // ---------------------------------------------------------------------------------------------
-
 function mongoBlockProcessed(db, blockRecord, reattempt) {
     let maxReattempts = 1;
     // Add record of block to blocksProcessed collection in database
-    db.collection('blocksProcessed').updateOne({ blockNumber: blockRecord.blockNumber, status: {$ne : 'OK'}}, {$set: blockRecord}, {upsert: true})
+    db.collection('blocksProcessed').findOneAndUpdate({ blockNumber: blockRecord.blockNumber, status: {$ne : 'OK'}}, {$set: blockRecord}, {upsert: true, returnOriginal: false, maxTimeMS: 1000})
+        .then(function(response) {
+            if (response.value.hasOwnProperty('operationsProcessed')) {
+                if ((response.value.operationsCount == response.value.operationsProcessed) && (response.value.status == 'Processing')) {
+                    db.collection('blocksProcessed').updateOne({ blockNumber: blockRecord.blockNumber}, {$set: {status: 'OK'}})
+                }
+            }
+        })
         .catch(function(error) {
             if(error.code == 11000) {
                 if (reattempt < maxReattempts) {
@@ -504,6 +515,30 @@ function mongoOperationProcessed(db, localBlockNumber, operationRecord, operatio
 }
 
 module.exports.mongoOperationProcessed = mongoOperationProcessed;
+
+
+
+// Update blocksProcessed for an error
+// -----------------------------------
+function mongoErrorLog(db, localErrorRecord, reattempt) {
+    let maxReattempts = 1;
+    db.collection('blocksProcessed').updateOne({ blockNumber: localErrorRecord.blockNumber}, {$set: {status: localErrorRecord.status}}, {upsert: true})
+        .catch(function(error) {
+            if(error.code == 11000) {
+                if (reattempt < maxReattempts) {
+                    console.log('E11000 error with <', localErrorRecord.blockNumber, '> mongoErrorLog. Re-attempting...');
+                    mongoErrorLog(db, localErrorRecord, 1);
+                } else {
+                    console.log('E11000 error with <', localErrorRecord.blockNumber, '> mongoErrorLog. Maximum reattempts surpassed.');
+                }
+            } else {
+                console.log('Non-standard error with <', localErrorRecord.blockNumber, '> mongoErrorLog.');
+                console.log(error);
+            }
+        });
+}
+
+module.exports.mongoErrorLog = mongoErrorLog;
 
 
 
@@ -784,10 +819,10 @@ function findCommentsMongo(localApp, db, openBlock, closeBlock) {
     db.collection('comments').find(
 
         {$and : [
-            { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
+            { blockNumber: { $gte: openBlock, $lt: closeBlock }},
             //{operations: 'comment'},
             //{operations: 'vote'},
-            {operations: 'author_reward'},
+            //{operations: 'author_reward'},
         ]}
 
     ).toArray()

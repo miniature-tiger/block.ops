@@ -349,48 +349,63 @@ async function fillOperations() {
                 mongoblock.mongoOperationProcessed(db, localBlockNo, recordOperation, opsNotHandled, 0);
                 blocksCompleted += 1;
 
-                if (blocksCompleted  + blocksOK == blocksToProcess) {
+                if (blocksCompleted + blocksOK == blocksToProcess) {
                     completeOperationsLoop();
 
                 } else if (blocksStarted - blocksCompleted < 4) {
                     fiveBlock();
                 }
             } catch (error) {
-                console.log('blockNumber:', localBlockNo);
-                console.log('Error in processing virtual ops');
-                //console.dir(JSON.parse(body), { depth: null });
-                console.log(error); // TO DO - update to register an error in the blocksProcessed collection rather than log error
+                console.log('Error in processing virtual ops:', localBlockNo, 'Error logged.');
+                let errorRecord = {blockNumber: localBlockNo, status: 'error'};
+                mongoblock.mongoErrorLog(db, errorRecord, 0);
+                blocksCompleted += 1;
+                errorCount += 1;
             }
         } else {
             console.log('Error in processing virtual ops:', localBlockNo);
             if (error.errno = 'ENOTFOUND') {
-                console.log('ENOTFOUND: Most likely error is connection lost.'); // to do: deal with checking which blocks loaded, reconnecting, and restarting loop.
+                console.log('ENOTFOUND: Most likely error is connection lost. Error logged.'); // to do: deal with checking which blocks loaded, reconnecting, and restarting loop.
             } else {
                 console.log(error);
             }
 
-            let blockRecord = {blockNumber: localBlockNo, status: 'error'};
-            db.collection('blocksProcessed').insertOne(blockRecord, (error, results) => {
-                if(error) { if(error.code != 11000) {console.log(error);}}
-            });
+            let errorRecord = {blockNumber: localBlockNo, status: 'error'};
+            mongoblock.mongoErrorLog(db, errorRecord, 0);
             blocksCompleted += 1;
             errorCount += 1;
         }
     }
 
     async function activeVotes(localOperation) {
-        let votesList = await steemrequest.getActiveVotes(localOperation.op[1].author, localOperation.op[1].permlink);
-        votesList = JSON.parse(votesList);
-        db.collection('blocksProcessed').updateOne({ blockNumber: localOperation.block, operations: { $elemMatch: { virtualOp: localOperation.virtual_op}}}, {$set: {"operations.$.activeVotesCount": votesList.result.length, "operations.$.activeVotesProcessed": 0}}, {upsert: false}, (error, results) => {
-            if (error) {
-                console.log(error);
-            }
-        });
-        for (let vote of votesList.result) {
-            mongoblock.processActiveVote(vote, localOperation.op[1].author, localOperation.op[1].permlink, localOperation.block, localOperation.virtual_op, mongoblock.mongoActiveVote, db);
-        }
+        await steemrequest.getActiveVotes(localOperation.op[1].author, localOperation.op[1].permlink)
+            .then(function(votesReturned) {
+                votesList = JSON.parse(votesReturned);
+                db.collection('blocksProcessed').updateOne({ blockNumber: localOperation.block, operations: { $elemMatch: { virtualOp: localOperation.virtual_op}}}, {$set: {"operations.$.activeVotesCount": votesList.result.length, "operations.$.activeVotesProcessed": 0}}, {upsert: false}, (error, results) => {
+                    if (error) {
+                        console.log('active votes error', error);
+                    }
+                })
+                for (let vote of votesList.result) {
+                    mongoblock.processActiveVote(vote, localOperation.op[1].author, localOperation.op[1].permlink, localOperation.block, localOperation.virtual_op, mongoblock.mongoActiveVote, db);
+                }
+            })
+            .catch(function(error) {
+                console.log('Error in ', localOperation.block, localOperation.op[1].author, localOperation.op[1].permlink, 'active votes. Error logged.');
+                let errorRecord = {blockNumber: localOperation.block, status: 'error'};
+                mongoblock.mongoErrorLog(db, errorRecord, 0);
+            })
+                /*let votesList = await steemrequest.getActiveVotes(localOperation.op[1].author, localOperation.op[1].permlink);
+                votesList = JSON.parse(votesList);
+                db.collection('blocksProcessed').updateOne({ blockNumber: localOperation.block, operations: { $elemMatch: { virtualOp: localOperation.virtual_op}}}, {$set: {"operations.$.activeVotesCount": votesList.result.length, "operations.$.activeVotesProcessed": 0}}, {upsert: false}, (error, results) => {
+                    if (error) {
+                        console.log(error);
+                    }
+                });
+                for (let vote of votesList.result) {
+                    mongoblock.processActiveVote(vote, localOperation.op[1].author, localOperation.op[1].permlink, localOperation.block, localOperation.virtual_op, mongoblock.mongoActiveVote, db);
+                }*/
     }
-
 
     function completeOperationsLoop() {
         let runTime = Date.now() - launchTime;
