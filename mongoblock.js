@@ -28,6 +28,7 @@ module.exports.checkCollectionExists = checkCollectionExists;
 // ---------------------------------------------
 // < Returns a promise > (since async function)
 async function dateToBlockNumber(localDate, localDatePlusOne, db) {
+    let result = 0;
     await db.collection('blockDates').find({timestamp: {$gte: localDate, $lt: localDatePlusOne}}).project({ timestamp: 1, blockNumber: 1, _id: 0 }).toArray()
         .then(function(records) {
             result = records[0].blockNumber;
@@ -43,59 +44,66 @@ module.exports.dateToBlockNumber = dateToBlockNumber;
 
 // Comment - processing of block operation
 // ---------------------------------------------
-function processComment(operation, mongoComment, db) {
-    let appName = '', appVersion = '';
+function processComment(localOperation, localOperationNumber, mongoComment, db) {
+    let appName = '';
+    let appVersion = '';
     let msecondsInSevenDays = 604800000;
-    let commentTimestamp = new Date(operation.timestamp + '.000Z');
+    let commentTimestamp = new Date(localOperation.timestamp + '.000Z');
     let json = {};
 
     // Parsing application / version data
-    if (operation.op[1].hasOwnProperty('json_metadata')) {
+    if (localOperation.op[1].hasOwnProperty('json_metadata')) {
         try {
-            json = JSON.parse(operation.op[1].json_metadata);
+            json = JSON.parse(localOperation.op[1].json_metadata);
         } catch(error) {
             [appName, appVersion] = ['other', 'badJson']
         }
-        if (json.hasOwnProperty('app')) {
-            if (json.app == null) {
-                [appName, appVersion] = ['other', 'nullApp']
-            } else if (json.app.hasOwnProperty('name')) { // parley
-                appName = json.app.name;
-            } else if (json.app instanceof Array) { // cryptoowls
-                console.log(json.app, typeof json.app, json.app instanceof Array)
-                appName = json.app[0];
+
+        if (json == null || appName == 'other')
+            [appName, appVersion] = ['other', 'badJson']
+        else {
+            if (json.hasOwnProperty('app')) {
+                if (json.app == null) {
+                    [appName, appVersion] = ['other', 'nullApp']
+                } else if (json.app.hasOwnProperty('name')) { // parley
+                    appName = json.app.name;
+                } else if (json.app instanceof Array) { // cryptoowls
+                    console.log(json.app, typeof json.app, json.app instanceof Array)
+                    appName = json.app[0];
+                } else {
+                    [appName, appVersion] = json.app.split('/');
+                }
             } else {
-                [appName, appVersion] = json.app.split('/');
+                [appName, appVersion] = ['other', 'noApp']
             }
-        } else {
-            [appName, appVersion] = ['other', 'noApp']
         }
     } else {
         [appName, appVersion] = ['other', 'noJson']
     }
 
+
     // Basic depth measure (post or comment)
-    if (operation.op[1].parent_author == '') {
+    if (localOperation.op[1].parent_author == '') {
         postComment = 0;
     } else {
         postComment = 1;
     }
 
     // Setting record if no author_payout (i.e. blocks running forwards)
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, blockNumber: operation.block, timestamp: commentTimestamp,
-                    transactionNumber: operation.trx_in_block, transactionType: 'commentUnverified', application: appName, applicationVersion: appVersion, postComment: postComment};
+    let commentRecord = {author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, blockNumber: localOperation.block, timestamp: commentTimestamp,
+                    transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: 'commentUnverified', application: appName, applicationVersion: appVersion, postComment: postComment};
 
     // Self-validation of original comments using 7 day payout period
-    db.collection('comments').find({ author: operation.op[1].author, permlink: operation.op[1].permlink, operations: 'author_reward'}).toArray()
+    db.collection('comments').find({ author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, operations: 'author_reward'}).toArray()
         .then(function(commentArray) {
             if(commentArray.length > 0) {
                 if (commentArray[0].payout_timestamp - commentTimestamp == msecondsInSevenDays) {
-                    record.transactionType = 'commentOriginal';
+                    commentRecord.transactionType = 'commentOriginal';
                 } else {
-                    record.transactionType = 'commentEdit';
+                    commentRecord.transactionType = 'commentEdit';
                 }
             }
-            mongoComment(db, record, operation, 0);
+            mongoComment(db, commentRecord, 0);
         });
 }
 
@@ -105,13 +113,13 @@ module.exports.processComment = processComment;
 
 // Comment - update / insert of mongo record
 // -----------------------------------------------
-function mongoComment(db, localRecord, operation, reattempt) {
+function mongoComment(db, localRecord, reattempt) {
     let maxReattempts = 1;
-    recordOperation = {transactionNumber: localRecord.transactionNumber, transactionType: 'comment', status: 'OK'};
+    let logComment = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: 'comment', count: 1, status: 'OK'};
     // Uses upsert - blocks may be processed in any order so author/permlink record may already exist if another operation is processed first
     db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, application: {$exists : false}}, {$set: localRecord, $addToSet: {operations: 'comment'}}, {upsert: true})
         .then(function(response) {
-            mongoOperationProcessed(db, localRecord.blockNumber, recordOperation, 1, 0);
+            mongoOperationProcessed(db, localRecord.blockNumber, logComment, 1, 0);
         })
         .catch(function(error) {
             if(error.code == 11000) {
@@ -122,18 +130,18 @@ function mongoComment(db, localRecord, operation, reattempt) {
                     if(commentArray.length > 0) {
                         if (commentArray[0].blockNumber < localRecord.blockNumber) {
                             // Comment in document is from older block - so this operation is a comment edit
-                            mongoOperationProcessed(db, localRecord.blockNumber, recordOperation, 1, 0);
+                            mongoOperationProcessed(db, localRecord.blockNumber, logComment, 1, 0);
                             // add this operation to comment edits section of document?
                         } else {
                             // have to edit document with this comment as the new comment
                             db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$set: localRecord, $addToSet: {operations: 'comment'}}, {upsert: false})
-                            mongoOperationProcessed(db, localRecord.blockNumber, recordOperation, 1, 0);
+                            mongoOperationProcessed(db, localRecord.blockNumber, logComment, 1, 0);
                             // and add old comment to comment edits?
                         }
                     } else {
                         if (reattempt < maxReattempts) {
                             console.log('E11000 error with <', localRecord.author, localRecord.blockNumber, '> comment. Re-attempting...');
-                            mongoComment(db, localRecord, operation, 1);
+                            mongoComment(db, localRecord, 1);
                         } else {
                             console.log('E11000 error with <', localRecord.author, localRecord.blockNumber, '> comment. Maximum reattempts surpassed.');
                         }
@@ -152,9 +160,9 @@ module.exports.mongoComment = mongoComment;
 
 // Vote - processing of block operation
 // ---------------------------------------------
-function processVote(operation, mongoVote, db) {
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, voter: operation.op[1].voter, percent: Number((operation.op[1].weight/100).toFixed(0)), vote_timestamp: new Date(operation.timestamp + '.000Z'), vote_blockNumber: operation.block, transactionNumber: operation.trx_in_block, transactionType: operation.op[0]};
-    mongoVote(db, record, 0);
+function processVote(localOperation, localOperationNumber, mongoVote, db) {
+    let voteRecord = {author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, voter: localOperation.op[1].voter, percent: Number((localOperation.op[1].weight/100).toFixed(0)), vote_timestamp: new Date(localOperation.timestamp + '.000Z'), vote_blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: localOperation.op[0]};
+    mongoVote(db, voteRecord, 0);
 }
 
 module.exports.processVote = processVote;
@@ -165,14 +173,14 @@ module.exports.processVote = processVote;
 // -----------------------------------------------
 function mongoVote(db, localRecord, reattempt) {
     let maxReattempts = 1;
+    let logVote = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: 'vote', count: 1, status: 'OK'};
     db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.voter}).toArray()
         .then(function(result) {
             // Adds all vote details to curation set if author / permlink / voter combination not found
             if(result.length === 0) {
                 db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$addToSet: {curators: {voter: localRecord.voter, percent: localRecord.percent, vote_timestamp: localRecord.vote_timestamp, vote_blockNumber: localRecord.vote_blockNumber}, operations: 'vote'}}, {upsert: true})
                     .then(function(response) {
-                        recordOperation = {transactionNumber: localRecord.transactionNumber, transactionType: localRecord.transactionType, status: 'OK'};
-                        mongoOperationProcessed(db, localRecord.vote_blockNumber, recordOperation, 1, 0);
+                        mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
                     })
                     .catch(function(error) {
                         if(error.code == 11000) {
@@ -194,8 +202,7 @@ function mongoVote(db, localRecord, reattempt) {
                                       "curators.$.vote_blockNumber": localRecord.vote_blockNumber},
                                 $addToSet: {operations: 'vote'}}, {upsert: false})
                     .then(function(response) {
-                        recordOperation = {transactionNumber: localRecord.transactionNumber, transactionType: localRecord.transactionType, status: 'OK'};
-                        mongoOperationProcessed(db, localRecord.vote_blockNumber, recordOperation, 1, 0);
+                        mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
                     })
                     .catch(function(error) {
                           console.log('Error: vote', localRecord.voter);
@@ -210,11 +217,12 @@ module.exports.mongoVote = mongoVote;
 
 // ActiveVotes - processing of active votes (extracted at end of voting period)
 // ----------------------------------------------------------------------------
-function processActiveVote(localVote, localAuthor, localPermlink, localBlockNumber, localVirtualOp, mongoActiveVote, db) {
+async function processActiveVote(localVote, localAuthor, localPermlink, localBlockNumber, localVirtualOp, mongoActiveVote, db) {
     let formatVote = {voter: localVote.voter, curation_weight: localVote.weight, rshares: Number(localVote.rshares),
                               percent: Number((localVote.percent/100).toFixed(2)), reputation: Number(localVote.reputation), vote_timestamp: new Date(localVote.time + '.000Z')}
-    let record = {author: localAuthor, permlink: localPermlink, activeVote: formatVote};
-    mongoActiveVote(db, localBlockNumber, localVirtualOp, record, 0);
+    let activeRecord = {author: localAuthor, permlink: localPermlink, activeVote: formatVote};
+
+    return activeRecord;
 }
 
 module.exports.processActiveVote = processActiveVote;
@@ -223,26 +231,22 @@ module.exports.processActiveVote = processActiveVote;
 
 // ActiveVotes - update / insert of mongo record
 // ---------------------------------------------
-function mongoActiveVote(db, activeBlockNumber, activeVirtualOp, localRecord, reattempt) {
+async function mongoActiveVote(db, activeBlockNumber, activeVirtualOp, localRecord, reattempt) {
     let maxReattempts = 1;
-
-    db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.activeVote.voter}).toArray()
-        .then(function(result) {
+    let activeUpdateStatus = '';
+    await db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.activeVote.voter}).toArray()
+        .then(async function(result) {
             // Adds all vote details to curation set if author / permlink / voter combination not found
             if(result.length === 0) {
-                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$inc: {"rshares": localRecord.activeVote.rshares}, $addToSet: {curators: localRecord.activeVote, operations: 'active_votes'}}, {upsert: true})
+                await db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$inc: {"rshares": localRecord.activeVote.rshares}, $addToSet: {curators: localRecord.activeVote, operations: 'active_votes'}}, {upsert: true})
                     .then(function(response) {
-                        db.collection('blocksProcessed').updateOne({ blockNumber: activeBlockNumber, operations: { $elemMatch: { virtualOp: activeVirtualOp}}}, {$inc: {"operations.$.activeVotesProcessed": 1}}, {upsert: false}, (error, results) => {
-                            if(error) {
-                                console.log(error);
-                            }
-                        });
+                        activeUpdateStatus = response.result;
                     })
                     .catch(function(error) {
                         if(error.code == 11000) {
                             if (reattempt < maxReattempts) {
                                 console.log('E11000 error with <', localRecord.activeVote.voter, activeBlockNumber, '> ActiveVote. Re-attempting...');
-                                mongoActiveVote(db, localRecord, 1);
+                                mongoActiveVote(db, activeBlockNumber, activeVirtualOp, localRecord, 1);
                             } else {
                                 console.log('E11000 error with <', localRecord.activeVote.voter, activeBlockNumber, '> ActiveVote. Maximum reattempts surpassed.');
                             }
@@ -257,25 +261,23 @@ function mongoActiveVote(db, activeBlockNumber, activeVirtualOp, localRecord, re
                 // No previous insert in Mongo for this active vote; entry was from vote or curation reward operations
                 let arrayPosition = result[0].curators.findIndex(fI => fI.voter == localRecord.activeVote.voter);
                 if(!(result[0].curators[arrayPosition].hasOwnProperty('rshares'))) {
-                    db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.activeVote.voter}}},
+                    await db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.activeVote.voter}}},
                                   {$inc: {"rshares": localRecord.activeVote.rshares}, $set: {"curators.$.voter": localRecord.activeVote.voter, "curators.$.curation_weight": localRecord.activeVote.curation_weight, "curators.$.rshares": localRecord.activeVote.rshares,
                                     "curators.$.percent": localRecord.activeVote.percent, "curators.$.reputation": localRecord.activeVote.reputation, "curators.$.vote_timestamp": localRecord.activeVote.vote_timestamp},
                                     $addToSet: {operations: 'active_votes'}}, {upsert: false})
                         .then(function(response) {
-                            db.collection('blocksProcessed').updateOne({ blockNumber: activeBlockNumber, operations: { $elemMatch: { virtualOp: activeVirtualOp}}}, {$inc: {"operations.$.activeVotesProcessed": 1}}, {upsert: false}, (error, results) => {
-                                if(error) {
-                                    console.log(error);
-                                }
-                            });
+                            activeUpdateStatus = response.result;
                         })
                         .catch(function(error) {
                               console.log('Error: active_vote', localRecord.activeVote.voter);
                         });
                 } else {
-                    // Previous insert in Mongo for this active vote; double operation or rerun - need to skip to avoid double counting in $inc
+                  // Previous insert in Mongo for this active vote; double operation or rerun - need to skip to avoid double counting in $inc
+                  activeUpdateStatus = 'skipped';
                 }
             }
         })
+    return activeUpdateStatus;
 }
 
 module.exports.mongoActiveVote = mongoActiveVote;
@@ -284,11 +286,11 @@ module.exports.mongoActiveVote = mongoActiveVote;
 
 // Author Reward - processing of block operation
 // ---------------------------------------------
-function processAuthorReward(operation, mongoAuthorReward, db) {
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink,
-                    author_payout: {sbd: Number(operation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(operation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(operation.op[1].vesting_payout.split(' ', 1)[0])},
-                    payout_blockNumber: operation.block, payout_timestamp: new Date(operation.timestamp + '.000Z') };
-    mongoAuthorReward(db, record, operation.virtual_op, 0);
+function processAuthorReward(localOperation, mongoAuthorReward, db) {
+    let authorRecord = {author: localOperation.op[1].author, permlink: localOperation.op[1].permlink,
+                    author_payout: {sbd: Number(localOperation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(localOperation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(localOperation.op[1].vesting_payout.split(' ', 1)[0])},
+                    payout_blockNumber: localOperation.block, payout_timestamp: new Date(localOperation.timestamp + '.000Z') };
+    mongoAuthorReward(db, authorRecord, localOperation.virtual_op, 0);
 }
 
 module.exports.processAuthorReward = processAuthorReward;
@@ -300,10 +302,10 @@ module.exports.processAuthorReward = processAuthorReward;
 function mongoAuthorReward(db, localRecord, virtualOp, reattempt) {
     // Uses upsert - blocks may be processed in any order so author/permlink record may already exist if another operation is processed first
     let maxReattempts = 1;
+    let logAuthor = {virtualOp: virtualOp, transactionType: 'author_reward', count: 1, status: 'OK'};
     db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$set: localRecord, $addToSet: {operations: 'author_reward'}}, {upsert: true})
         .then(function(response) {
-            recordOperation = {virtualOp: virtualOp, transactionType: 'author_reward', status: 'OK'};
-            mongoOperationProcessed(db, localRecord.payout_blockNumber, recordOperation, 1, 0);
+            mongoOperationProcessed(db, localRecord.payout_blockNumber, logAuthor, 1, 0);
         })
         .catch(function(error) {
             if(error.code == 11000) {
@@ -326,11 +328,11 @@ module.exports.mongoAuthorReward = mongoAuthorReward;
 
 // Benefactor Reward - processing of block operation
 // -------------------------------------------------
-function processBenefactorReward(operation, mongoBenefactorReward, db) {
-    let record = {author: operation.op[1].author, permlink: operation.op[1].permlink, benefactor: operation.op[1].benefactor, benefactor_timestamp: new Date(operation.timestamp + '.000Z'),
-                          benefactor_payout: {sbd: Number(operation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(operation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(operation.op[1].vesting_payout.split(' ', 1)[0])},
-                          virtualOp: operation.virtual_op, payout_blockNumber: operation.block};
-    mongoBenefactorReward(db, record, 0);
+function processBenefactorReward(localOperation, mongoBenefactorReward, db) {
+    let benefactorRecord = {author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, benefactor: localOperation.op[1].benefactor, benefactor_timestamp: new Date(localOperation.timestamp + '.000Z'),
+                          benefactor_payout: {sbd: Number(localOperation.op[1].sbd_payout.split(' ', 1)[0]), steem: Number(localOperation.op[1].steem_payout.split(' ', 1)[0]), vests: Number(localOperation.op[1].vesting_payout.split(' ', 1)[0])},
+                          virtualOp: localOperation.virtual_op, payout_blockNumber: localOperation.block};
+    mongoBenefactorReward(db, benefactorRecord, 0);
 }
 
 module.exports.processBenefactorReward = processBenefactorReward;
@@ -342,7 +344,7 @@ module.exports.processBenefactorReward = processBenefactorReward;
 function mongoBenefactorReward(db, localRecord, reattempt) {
     // Uses upsert - blocks may be processed in any order so author/permlink record may already exist if another operation is processed first
     let maxReattempts = 1;
-    recordOperation = {virtualOp: localRecord.virtualOp, transactionType: 'benefactor_reward', status: 'OK'};
+    let logBenefactor = {virtualOp: localRecord.virtualOp, transactionType: 'benefactor_reward', count: 1, status: 'OK'};
     db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "benefactors.user": localRecord.benefactor}).toArray()
         .then(function(result) {
             // Adds all benefactor details to benefactor set if author / permlink / benefactor combination not found
@@ -352,7 +354,7 @@ function mongoBenefactorReward(db, localRecord, reattempt) {
                                                         $addToSet: {operations: 'benefactor_payout', benefactors: {user: localRecord.benefactor, sbd: localRecord.benefactor_payout.sbd, steem: localRecord.benefactor_payout.steem, vests: localRecord.benefactor_payout.vests, timestamp: localRecord.benefactor_timestamp}}},
                                                     {upsert: true})
                     .then(function(response) {
-                        mongoOperationProcessed(db, localRecord.payout_blockNumber, recordOperation, 1, 0);
+                        mongoOperationProcessed(db, localRecord.payout_blockNumber, logBenefactor, 1, 0);
                     })
                     .catch(function(error) {
                         if(error.code == 11000) {
@@ -361,17 +363,15 @@ function mongoBenefactorReward(db, localRecord, reattempt) {
                                 mongoBenefactorReward(db, localRecord, 1);
                             } else {
                                 console.log('E11000 error with <', localRecord.benefactor, localRecord.payout_blockNumber, '> benefactor_payout. Maximum reattempts surpassed.');
-                                console.log('benefactor reward error', localRecord.payout_blockNumber, localRecord.virtualOp)
                             }
                         } else {
                             console.log('Non-standard error with <', localRecord.benefactor, localRecord.payout_blockNumber, '> benefactor_payout.');
-                            console.log('benefactor reward error', localRecord.payout_blockNumber, localRecord.virtualOp)
                             console.log(error);
                         }
                     });
             // No need to update 'comments' collection. Either a repeat operation in a block or a rerun of a block with operation already inserted in 'comments'
             } else {
-                mongoOperationProcessed(db, localRecord.payout_blockNumber, recordOperation, 1, 0);
+                mongoOperationProcessed(db, localRecord.payout_blockNumber, logBenefactor, 1, 0);
             }
     })
 }
@@ -382,10 +382,10 @@ module.exports.mongoBenefactorReward = mongoBenefactorReward;
 
 // Curator Reward - processing of block operation
 // -------------------------------------------------
-function processCuratorReward(operation, mongoCuratorReward, db) {
-    let record = {author: operation.op[1].comment_author, permlink: operation.op[1].comment_permlink, voter: operation.op[1].curator, reward_timestamp: new Date(operation.timestamp + '.000Z'),
-                  curator_payout: {vests: Number(operation.op[1].reward.split(' ', 1)[0])}, virtualOp: operation.virtual_op, payout_blockNumber: operation.block};
-    mongoCuratorReward(db, record, 0);
+function processCuratorReward(localOperation, mongoCuratorReward, db) {
+    let curatorRecord = {author: localOperation.op[1].comment_author, permlink: localOperation.op[1].comment_permlink, voter: localOperation.op[1].curator, reward_timestamp: new Date(localOperation.timestamp + '.000Z'),
+                  curator_payout: {vests: Number(localOperation.op[1].reward.split(' ', 1)[0])}, virtualOp: localOperation.virtual_op, payout_blockNumber: localOperation.block};
+    mongoCuratorReward(db, curatorRecord, 0);
 }
 
 module.exports.processCuratorReward = processCuratorReward;
@@ -396,7 +396,7 @@ module.exports.processCuratorReward = processCuratorReward;
 // -----------------------------------------------
 function mongoCuratorReward(db, localRecord, reattempt) {
     let maxReattempts = 1;
-    let recordOperation = {virtualOp: localRecord.virtualOp, transactionType: 'curator_reward', status: 'OK'};
+    let logCurator = {virtualOp: localRecord.virtualOp, transactionType: 'curator_reward', count: 1, status: 'OK'};
     db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.voter}).toArray()
         .then(function(result) {
             // Adds all vote details to curation set if author / permlink / voter combination not found
@@ -404,13 +404,13 @@ function mongoCuratorReward(db, localRecord, reattempt) {
                 db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink}, {$inc: {"curator_payout.vests": localRecord.curator_payout.vests},
                                                         $addToSet: {curators: {voter: localRecord.voter, vests: localRecord.curator_payout.vests, reward_timestamp: localRecord.reward_timestamp}, operations: 'curator_payout'}}, {upsert: true})
                     .then(function(response) {
-                        mongoOperationProcessed(db, localRecord.payout_blockNumber, recordOperation, 1, 0);
+                        mongoOperationProcessed(db, localRecord.payout_blockNumber, logCurator, 1, 0);
                     })
                     .catch(function(error) {
                         if(error.code == 11000) {
                             if (reattempt < maxReattempts) {
                                 console.log('E11000 error with <', localRecord.voter, localRecord.payout_blockNumber, '> curator_payout. Re-attempting...');
-                                mongoVote(db, localRecord, 1);
+                                mongoCuratorReward(db, localRecord, 1);
                             } else {
                                 console.log('E11000 error with <', localRecord.voter, localRecord.payout_blockNumber, '> curator_payout. Maximum reattempts surpassed.');
                             }
@@ -428,14 +428,14 @@ function mongoCuratorReward(db, localRecord, reattempt) {
                                   {$inc: {"curator_payout.vests": localRecord.curator_payout.vests}, $set: {"curators.$.voter": localRecord.voter, "curators.$.vests": localRecord.curator_payout.vests, "curators.$.reward_timestamp": localRecord.reward_timestamp},
                                     $addToSet: {operations: 'curator_payout'}}, {upsert: false})
                         .then(function(response) {
-                            mongoOperationProcessed(db, localRecord.payout_blockNumber, recordOperation, 1, 0);
+                            mongoOperationProcessed(db, localRecord.payout_blockNumber, logCurator, 1, 0);
                         })
                         .catch(function(error) {
                               console.log('Error: curator_payout', localRecord.voter);
                         });
                 // Previous insert in Mongo for this curation reward; double operation or rerun - need to skip to avoid double counting in $inc
                 } else {
-                    mongoOperationProcessed(db, localRecord.payout_blockNumber, recordOperation, 1, 0);
+                    mongoOperationProcessed(db, localRecord.payout_blockNumber, logCurator, 1, 0);
                 }
             }
         })
@@ -448,27 +448,28 @@ module.exports.mongoCuratorReward = mongoCuratorReward;
 
 // Initialisation of blocksProcessed documents for each block and handling of reprocessed blocks
 // ---------------------------------------------------------------------------------------------
-function mongoBlockProcessed(db, blockRecord, reattempt) {
+function mongoBlockProcessed(db, localBlockRecord, reattempt) {
     let maxReattempts = 1;
     // Add record of block to blocksProcessed collection in database
-    db.collection('blocksProcessed').findOneAndUpdate({ blockNumber: blockRecord.blockNumber, status: {$ne : 'OK'}}, {$set: blockRecord}, {upsert: true, returnOriginal: false, maxTimeMS: 1000})
+    db.collection('blocksProcessed').findOneAndUpdate({ blockNumber: localBlockRecord.blockNumber, status: {$ne : 'OK'}}, {$set: localBlockRecord}, {upsert: true, returnOriginal: false, maxTimeMS: 1000})
         .then(function(response) {
-            if (response.value.hasOwnProperty('operationsProcessed')) {
-                if ((response.value.operationsCount == response.value.operationsProcessed) && (response.value.status == 'Processing')) {
-                    db.collection('blocksProcessed').updateOne({ blockNumber: blockRecord.blockNumber}, {$set: {status: 'OK'}})
+            if (response.value.hasOwnProperty('operationsProcessed') && response.value.hasOwnProperty('activeVoteSetProcessed')) {
+                if ((response.value.operationsCount == response.value.operationsProcessed) && (response.value.activeVoteSetCount == response.value.activeVoteSetProcessed) && (response.value.status == 'Processing')) {
+                    db.collection('blocksProcessed').updateOne({ blockNumber: localBlockRecord.blockNumber}, {$set: {status: 'OK'}})
+                    //console.log(response.value.operationsCount, response.value.operationsProcessed, response.value.activeVoteSetCount, response.value.activeVoteSetProcessed, response.value.status, 'set to ok - mongoBlockProcessed', localBlockRecord.blockNumber)
                 }
             }
         })
         .catch(function(error) {
             if(error.code == 11000) {
                 if (reattempt < maxReattempts) {
-                    console.log('E11000 error with <', blockRecord.blockNumber, '> mongoBlockProcessed. Re-attempting...');
-                    mongoBlockProcessed(db, blockRecord, 1);
+                    console.log('E11000 error with <', localBlockRecord.blockNumber, '> mongoBlockProcessed. Re-attempting...');
+                    mongoBlockProcessed(db, localBlockRecord, 1);
                 } else {
-                    console.log('E11000 error with <', blockRecord.blockNumber, '> mongoBlockProcessed. Maximum reattempts surpassed.');
+                    console.log('E11000 error with <', localBlockRecord.blockNumber, '> mongoBlockProcessed. Maximum reattempts surpassed.');
                 }
             } else {
-                console.log('Non-standard error with <', blockRecord.blockNumber, '> mongoBlockProcessed.');
+                console.log('Non-standard error with <', localBlockRecord.blockNumber, '> mongoBlockProcessed.');
                 console.log(error);
             }
     });
@@ -480,9 +481,9 @@ module.exports.mongoBlockProcessed = mongoBlockProcessed;
 
 // Update blocksProcessed with details of a single operation processed
 // -------------------------------------------------------------------
-function mongoOperationProcessed(db, localBlockNumber, operationRecord, operationsIncluded, reattempt) {
+function mongoOperationProcessed(db, localBlockNumber, operationLog, operationsIncluded, reattempt) {
     let maxReattempts = 1;
-    db.collection('blocksProcessed').findOneAndUpdate({ blockNumber: localBlockNumber}, {$addToSet: {operations: operationRecord}, $inc: {operationsProcessed: operationsIncluded}}, {upsert: true, returnOriginal: false, maxTimeMS: 1000})
+    db.collection('blocksProcessed').findOneAndUpdate({ blockNumber: localBlockNumber}, {$addToSet: {operations: operationLog}, $inc: {operationsProcessed: operationsIncluded}}, {upsert: true, returnOriginal: false, maxTimeMS: 1000})
         .then(function(response) {
             if (response.value == null) {
                 console.log('------------------------');
@@ -495,20 +496,21 @@ function mongoOperationProcessed(db, localBlockNumber, operationRecord, operatio
                         console.log('------------------------');
                     })
             }
-            if ((response.value.operationsCount == response.value.operationsProcessed) && (response.value.status == 'Processing')) {
+            if ((response.value.operationsCount == response.value.operationsProcessed) && (response.value.activeVoteSetCount == response.value.activeVoteSetProcessed) && (response.value.status == 'Processing')) {
                 db.collection('blocksProcessed').updateOne({ blockNumber: localBlockNumber}, {$set: {status: 'OK'}})
+                //console.log(response.value.operationsCount, response.value.operationsProcessed, response.value.activeVoteSetCount, response.value.activeVoteSetProcessed, response.value.status, 'set to ok - mongoOperationProcessed', localBlockNumber)
             }
         })
         .catch(function(error) {
             if(error.code == 11000) {
                 if (reattempt < maxReattempts) {
-                    console.log('E11000 error with <', localBlockNumber, operationRecord, '> mongoOperationProcessed. Re-attempting...');
-                    mongoOperationProcessed(db, localBlockNumber, operationRecord, operationsIncluded, 1);
+                    console.log('E11000 error with <', localBlockNumber, operationLog, '> mongoOperationProcessed. Re-attempting...');
+                    mongoOperationProcessed(db, localBlockNumber, operationLog, operationsIncluded, 1);
                 } else {
-                    console.log('E11000 error with <', localBlockNumber, operationRecord, '> mongoOperationProcessed. Maximum reattempts surpassed.');
+                    console.log('E11000 error with <', localBlockNumber, operationLog, '> mongoOperationProcessed. Maximum reattempts surpassed.');
                 }
             } else {
-                console.log('Non-standard error with <', localBlockNumber, operationRecord, '> mongoOperationProcessed.');
+                console.log('Non-standard error with <', localBlockNumber, operationLog, '> mongoOperationProcessed.');
                 console.log(error);
             }
         });
@@ -518,11 +520,83 @@ module.exports.mongoOperationProcessed = mongoOperationProcessed;
 
 
 
+// Update blocksProcessed with details for a set of active_votes (which is not a block operation so requires separate treatmenet)
+// ----------------------------------------------------------------------------------------------------------------------------
+async function mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, activeVoteSetIncluded, startEnd, reattempt) {
+    let maxReattempts = 1;
+
+    // Function carries out updates at the start and the end of each set of active_votes
+    if (startEnd == 'start') {
+        // Check if already created activevote op holder for blocknumber / associated virtual op number / type active vote
+        await db.collection('blocksProcessed').find({blockNumber: localActiveBlockNumber, "operations.associatedOp": localActiveLog.associatedOp}).toArray()
+            .then(function(result) {
+                if (result.length === 0) {
+                    // If not found: add to set
+                    db.collection('blocksProcessed').updateOne({ blockNumber: localActiveBlockNumber}, {$addToSet: {operations: localActiveLog}}, {upsert: true})
+                        .catch(function(error) {
+                            if(error.code == 11000) {
+                                if (reattempt < maxReattempts) {
+                                    console.log('E11000 error with <', localActiveBlockNumber, '> mongoActiveProcessed. Re-attempting...');
+                                    mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, activeVoteSetIncluded, startEnd, 1) ;
+                                } else {
+                                    console.log('E11000 error with <', localActiveBlockNumber, '> mongoActiveProcessed. Maximum reattempts surpassed.');
+                                }
+                            } else {
+                                console.log('Non-standard error with <', localActiveBlockNumber, '> mongoActiveProcessed.');
+                                console.log(localActiveBlockNumber, localActiveLog.associatedOp, localActiveLog.transactionType)
+                                console.log(error);
+                            }
+                        })
+
+                } else {
+                    // Already set up active_votes in operations - so must be a re-run or repeat operation - reset
+                    db.collection('blocksProcessed').findOneAndUpdate(  { blockNumber: localActiveBlockNumber, operations: { $elemMatch: { associatedOp: localActiveLog.associatedOp}}},
+                                                                        { $set: { "operations.$.associatedOp": localActiveLog.associatedOp, "operations.$.transactionType": localActiveLog.transactionType,
+                                                                                  "operations.$.count": localActiveLog.count, "operations.$.activeVotesCount": localActiveLog.activeVotesCount}},
+                                                                        { upsert: false, returnOriginal: false, maxTimeMS: 1000})
+
+                }
+            });
+    // Processing 'end' of active_vote set update
+    } else {
+        db.collection('blocksProcessed').findOneAndUpdate(  { blockNumber: localActiveBlockNumber, operations: { $elemMatch: { associatedOp: localActiveLog.associatedOp}}},
+                                                            { $set: {"operations.$.status": localActiveLog.status, "operations.$.activeVotesProcessed": localActiveLog.activeVotesProcessed},
+                                                              $inc: {activeVoteSetProcessed: activeVoteSetIncluded}},
+                                                            { upsert: false, returnOriginal: false, maxTimeMS: 1000})
+            .then(function(response) {
+                if (response.value == null) {
+                    if (reattempt < maxReattempts) {
+                        console.log('null response from mongoActiveProcessed <', localActiveBlockNumber, '>. Re-attempting...')
+                        mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, activeVoteSetIncluded, startEnd, 1) ;
+                    } else {
+                        console.log('null response from mongoActiveProcessed <', localActiveBlockNumber, '>. Maximum reattempts surpassed. Error logged.');
+                        let errorRecord = {blockNumber: localActiveBlockNumber, status: 'error'};
+                        mongoblock.mongoErrorLog(db, errorRecord, 0);
+                    }
+                } else if ((response.value.operationsCount == response.value.operationsProcessed) && (response.value.activeVoteSetCount == response.value.activeVoteSetProcessed) && (response.value.status == 'Processing')) {
+                    db.collection('blocksProcessed').updateOne({ blockNumber: localActiveBlockNumber}, {$set: {status: 'OK'}})
+                    //console.log(response.value.operationsCount, response.value.operationsProcessed, response.value.activeVoteSetCount, response.value.activeVoteSetProcessed, response.value.status, 'set to ok - mongoActiveProcessed', localActiveBlockNumber)
+                }
+            })
+            .catch(function(error) {
+                console.log(error)
+                console.log('Active votes log - end update - error.', localActiveBlockNumber, localActiveLog.associatedOp)
+            });
+    }
+}
+
+module.exports.mongoActiveProcessed = mongoActiveProcessed;
+
+
+
 // Update blocksProcessed for an error
 // -----------------------------------
-function mongoErrorLog(db, localErrorRecord, reattempt) {
+  function mongoErrorLog(db, localErrorRecord, reattempt) {
     let maxReattempts = 1;
-    db.collection('blocksProcessed').updateOne({ blockNumber: localErrorRecord.blockNumber}, {$set: {status: localErrorRecord.status}}, {upsert: true})
+    db.collection('blocksProcessed').findOneAndUpdate({ blockNumber: localErrorRecord.blockNumber}, {$set: {status: localErrorRecord.status}}, {upsert: true, returnOriginal: false, maxTimeMS: 1000} )
+        .then(function(response) {
+            console.log('Error update:', response.value.blockNumber, response.value.status, response.value.operationsCount, response.value.operationsError)
+        })
         .catch(function(error) {
             if(error.code == 11000) {
                 if (reattempt < maxReattempts) {
@@ -619,13 +693,13 @@ function mongoPrice(db, localRecord, reattempt) {
         .catch(function(error) {
             if(error.code == 11000) {
                 if (reattempt < maxReattempts) {
-                    console.log('E11000 error with <', localRecord.payout_blockNumber, '> mongoBlockProcessed. Re-attempting...');
+                    console.log('E11000 error with <', localRecord.payout_blockNumber, '> mongoPrice. Re-attempting...');
                     mongoPrice(db, localRecord, 1)
                 } else {
-                    console.log('E11000 error with <', localRecord.payout_blockNumber, '> mongoBlockProcessed. Maximum reattempts surpassed.');
+                    console.log('E11000 error with <', localRecord.payout_blockNumber, '> mongoPrice. Maximum reattempts surpassed.');
                 }
             } else {
-                console.log('Non-standard error with <', localRecord.payout_blockNumber, '> mongoBlockProcessed.');
+                console.log('Non-standard error with <', localRecord.payout_blockNumber, '> mongoPrice.');
                 console.log(error);
             }
     });
@@ -708,53 +782,117 @@ module.exports.reportCommentsMongo = reportCommentsMongo;
 
 
 
+// Function shows detail of a single block document from blocksProcessed
+// ---------------------------------------------------------------------
+async function showBlockMongo(db, openBlock) {
+      // Provide additional detail on error / processing blocks for debugging
+      await db.collection('blocksProcessed').aggregate([
+              { $match : {blockNumber: { $gte: openBlock, $lte: openBlock}}}
+          ]).toArray()
+          .then(function(records) {
+              for (let record of records) {
+                  delete record._id;
+                  console.dir(record, {depth: null});
+              }
+          })
+          .catch(function(error) {
+              console.log(error);
+          });
+      console.log('------------------------------------------------------------------------');
 
-// Function reports on blocks processed
-// ------------------------------------
-async function reportBlocksProcessed(db, openBlock, closeBlock, retort) {
+      await db.collection('blocksProcessed').aggregate([
+              { $match : {blockNumber: { $gte: openBlock, $lte: openBlock}}},
+              { $project : {_id: 0, operations: 1 }},
+              { $unwind : "$operations"},
+              { $sort : {"operations.virtualOp": 1, "operations.transactionNumber": 1, "operations.operationNumber": 1, }},
+          ]).toArray()
+          .then(function(records) {
+              for (let record of records) {
+                  delete record._id;
+                  console.dir(record, {depth: null});
+              }
+          })
+          .catch(function(error) {
+              console.log(error);
+          });
+      console.log('------------------------------------------------------------------------');
+      console.log('closing mongo db');
+      client.close();
+}
+
+module.exports.showBlockMongo = showBlockMongo;
+
+
+
+// Function reports on blocks processed or returns blocks to process for fill operations
+// -------------------------------------------------------------------------------------
+async function reportBlocksProcessed(db, openBlock, closeBlock, retort, detail) {
 
     if (retort == 'report') {
+        let blocksPerDay = [];
 
-        db.collection('blocksProcessed').aggregate([
-            { $match : {blockNumber: { $gte: openBlock, $lt: closeBlock }}},
-            { $project : {_id: 0, blockNumber: 1, status: 1, operationsCount: 1, operationsProcessed: 1}},
-            { $group : {_id : {status : "$status"},
-                        count: { $sum: 1 },
-                        }},
-            ]).toArray()
-            .then(function(records) {
-                for (let record of records) {
-                    //record.status = record._id.status;
-                    //delete record._id;
-                    console.dir(record, {depth: null});
+        // Extract number of existing blocks from blockDates (determined in setup)
+        await db.collection('blockDates')
+            .aggregate([
+                { $match : {blockNumber: {$gte: openBlock, $lte: closeBlock}}},
+                { $project : {_id: 0, date: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" }}, blockNumber: 1}},
+            ])
+            .toArray()
+            .then(function(blockDates) {
+                for (var i = 0; i < blockDates.length-1; i+=1) {
+                    blocksPerDay.push({date: blockDates[i].date, blocks_exist: (blockDates[i+1].blockNumber - blockDates[i].blockNumber)})
                 }
+            })
+        // Aggregate status of blocks processed in chosen date/blocks range and consolidate with above data on existing blocks
+        await db.collection('blocksProcessed').aggregate([
+                { $match : {blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+                { $project : {_id: 0, date: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" }}, blockNumber: 1, status: 1}},
+                { $group : {_id : {date: "$date", status: "$status"}, count: { $sum: 1 }, }},
+                { $sort: {"_id.date": 1, "_id.status": 1}},
+            ])
+            .toArray()
+            .then(function(records) {
+
+                let formattedRecords = [];
+                    for (let row of records) {
+                        collectionPosition = blocksPerDay.findIndex(fI => fI.date == row._id.date);
+                        if (collectionPosition == -1) {
+                            blocksPerDay.push({date: row._id.date, status: row._id.status, count: row.count })
+                        } else {
+                            blocksPerDay[collectionPosition][row._id.status] = row.count
+                        }
+                    }
+                console.log('------------------------------------------------------------------------');
+                console.log(blocksPerDay)
+                console.log('------------------------------------------------------------------------');
         }).catch(function(error) {
             console.log(error);
         });
 
-        db.collection('blocksProcessed').aggregate([
-            { $match : {blockNumber: { $gte: openBlock, $lt: closeBlock }, status: {$ne: 'OK'}}},
-            //{ $project : {_id: 0, blockNumber: 1, status: 1, operationsCount: 1, operationsProcessed: 1}},
-            ]).toArray()
-            .then(function(records) {
-                for (let record of records) {
-                    //record.status = record._id.status;
-                    //delete record._id;
-                    console.dir(record, {depth: null});
-                }
-            console.log('closing mongo db');
-            console.log('------------------------------------------------------------------------');
-            console.log('------------------------------------------------------------------------');
-            client.close();
-        }).catch(function(error) {
-            console.log(error);
-        });
-
+        if (detail == 'detail') {
+            // Provide additional detail on error / processing blocks for debugging
+            await db.collection('blocksProcessed').aggregate([
+                    { $match : {blockNumber: { $gte: openBlock, $lt: closeBlock }, status: {$ne: 'OK'}}} //status: {$ne: 'OK'}}},
+                    //{ $project : {_id: 0, blockNumber: 1, status: 1, operationsCount: 1, operationsProcessed: 1}},
+                ]).toArray()
+                .then(function(records) {
+                    for (let record of records) {
+                        delete record._id;
+                        console.dir(record, {depth: null});
+                    }
+                }).catch(function(error) {
+                    console.log(error);
+                });
+        }
+        console.log('closing mongo db');
+        console.log('------------------------------------------------------------------------');
+        client.close();
     }
 
+    // Returns blocks to process for fill operations
     if (retort == 'return') {
 
-    let okArray = [], result = [];
+        let okArray = [], result = [];
 
         await db.collection('blocksProcessed')
             .find({ blockNumber: { $gte: openBlock, $lt: closeBlock }, status: 'OK'})
@@ -782,12 +920,18 @@ async function reportBlocksProcessed(db, openBlock, closeBlock, retort) {
             console.log('0 ok blocks');
         } else {
             console.log(okArray[0], okArray[okArray.length-1], okArray.length);
+            if (okArray.length != 1000) {
+                console.log(okArray)
+            }
         }
         console.log('result');
         if (result.length == 0) {
             console.log('0 blocks to process');
         } else {
             console.log(result[0], result[result.length-1], result.length);
+            if (result.length != 1000) {
+                console.log(result)
+            }
         }
         return result;
     }
@@ -802,7 +946,7 @@ module.exports.reportBlocksProcessed = reportBlocksProcessed;
 function resetBlocksProcessed(db, firstInArray, lastInArray) {
     db.collection('blocksProcessed')
         .updateMany({ blockNumber: { $gte: firstInArray, $lte: lastInArray }, status: {$ne: 'OK'}},
-                {$set: {operationsProcessed: 0}, $pull: { operations: {transactionType: "notHandled"}}}, {upsert: false})
+                {$set: {operationsProcessed: 0, activeVoteSetProcessed: 0}, $pull: { operations: {transactionType: "notHandled", transactionType: "active_vote"}}}, {upsert: false})
         .catch(function(error) {
             console.log(error);
         });
@@ -819,7 +963,7 @@ function findCommentsMongo(localApp, db, openBlock, closeBlock) {
     db.collection('comments').find(
 
         {$and : [
-            { blockNumber: { $gte: openBlock, $lt: closeBlock }},
+            { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
             //{operations: 'comment'},
             //{operations: 'vote'},
             //{operations: 'author_reward'},
@@ -945,3 +1089,136 @@ function findCuratorMongo(voter, db, openBlock, closeBlock) {
 }
 
 module.exports.findCuratorMongo = findCuratorMongo;
+
+
+
+// Function reports on blocks processed or returns blocks to process for fill operations
+// -------------------------------------------------------------------------------------
+async function validateCommentsMongo(db, openBlock, closeBlock) {
+
+        // Breakdown between original, edited, and unverified comments
+        await db.collection('comments').aggregate([
+                { $match : {blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+                { $project : {_id: 0, date: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" }}, transactionType: 1, author_payout: 1}}, //, operationsCount: 1, operationsProcessed: 1
+                { $group :
+                    {_id : {date: "$date", transactionType: "$transactionType"},
+                    count: { $sum: 1 },
+                    author_payout_vests: {$sum: "$author_payout.vests"},
+                }},
+                { $sort: {"_id.date": 1, "_id.transactionType": 1}},
+            ])
+            .toArray()
+            .then(function(records) {
+                console.log('------------------------------------------------------------------------');
+                console.log('Breakdown between original, edited, and unverified comments');
+                console.log(records)
+                console.log('------------------------------------------------------------------------');
+        }).catch(function(error) {
+            console.log(error);
+        });
+
+
+        // Breakdown of comment payouts by creation date
+        await db.collection('comments').aggregate([
+                { $match :
+                    { $and :[
+                        { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                        { operations: 'author_reward'},
+                        { operations: 'active_votes'},
+                    ]}
+                },
+                { $project : {_id: 0, date: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" }}, operations: 1}}, //, operationsCount: 1, operationsProcessed: 1
+                { $group :
+                    {_id : {date: "$date"},
+                    count: { $sum: 1 },
+
+                }},
+                { $sort: {"_id.date": 1}},
+            ])
+            .toArray()
+            .then(function(records) {
+                console.log('------------------------------------------------------------------------');
+                console.log('Breakdown of comment payouts by creation date');
+                console.dir(records, {depth: null})
+                console.log('------------------------------------------------------------------------');
+        }).catch(function(error) {
+            console.log(error);
+        });
+
+
+        // Check all operations in block processed
+        await db.collection('blocksProcessed').aggregate([
+                { $match :
+                    { $and :[
+                        { blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                    ]}},
+                { $project : {_id: 0, blockNumber: 1, "operations.count": 1, operationsProcessed: 1, operationsCount: 1, }}, //, operationsCount: 1, operationsProcessed: 1
+                { $unwind : "$operations"},
+                { $group :
+                    {_id : {blockNumber: "$blockNumber", operationsCount: "$operationsCount"},
+                    individual_count: { $sum: "$operations.count"}}},
+                { $project : {"_id.blockNumber": 1, individual_count: 1, "_id.operationsCount": 1, check_zero: { $subtract: [ "$_id.operationsCount", "$individual_count" ]}}},
+                ])
+                .toArray()
+                .then(function(checks) {
+                    let countCheckCounter = 0;
+                    console.log('------------------------------------------------------------------------');
+                    console.log('Check all operations in block processed');
+
+                    for (let check of checks) {
+                        if (check.check_zero != 0) {
+                            console.dir(check, {depth: null})
+                            countCheckCounter += 1;
+                        }
+                    }
+                    console.log(checks.length + ' records checked. ' + countCheckCounter + ' errors.')
+
+                    console.log('------------------------------------------------------------------------');
+            }).catch(function(error) {
+                console.log(error);
+            });
+
+
+            // Check of active vote processing
+            await db.collection('blocksProcessed').aggregate([
+                    { $match :
+                        { $and :[
+                            { blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                            { "operations.transactionType": 'author_reward'}
+                        ]}},
+                    { $project : {_id: 0, blockNumber: 1, operations: {virtualOp: 1, associatedOp: 1, transactionType: 1, activeVotesCount: 1, activeVotesProcessed: 1 }}}, //"$curators.vests", "$curators.rshares"
+                    { $unwind : "$operations"},
+                    { $project : {_id: 0, blockNumber: 1, operations: {virtualNumber: {$ifNull: ["$operations.associatedOp", "$operations.virtualOp"]}, transactionType: 1, activeVotesCount: 1, activeVotesProcessed: 1 }}},
+                    { $match :
+                        { $or :[
+                            {"operations.transactionType": 'author_reward'},
+                            {"operations.transactionType": 'active_vote'},
+                        ]}},
+                    { $group: {_id : { blockNumber: "$blockNumber", virtualOp: "$operations.virtualNumber"},
+                                        activeVotesCount: { $sum: "$operations.activeVotesCount"},
+                                        activeVotesProcessed: { $sum: "$operations.activeVotesProcessed"},
+                                        count: { $sum: 1}
+                                      }},
+                    ])
+                    .toArray()
+                    .then(function(checks) {
+                        let countCheckCounter = 0;
+                        console.log('------------------------------------------------------------------------');
+                        console.log('Check of active vote processing');
+                        //console.dir(checks, {depth: null})
+                        for (let check of checks) {
+                            if (check.activeVotesCount != check.activeVotesProcessed || check.count != 2) {
+                                console.dir(check, {depth: null})
+                                countCheckCounter += 1;
+                            }
+                        }
+                        console.log(checks.length + ' records checked. ' + countCheckCounter + ' errors.')
+                        console.log('------------------------------------------------------------------------');
+                }).catch(function(error) {
+                    console.log(error);
+                });
+
+        client.close();
+}
+
+module.exports.validateCommentsMongo = validateCommentsMongo;
