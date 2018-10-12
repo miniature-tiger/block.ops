@@ -1383,3 +1383,77 @@ async function voteTimingMongo(db, openBlock, closeBlock, userGroup) {
 }
 
 module.exports.voteTimingMongo = voteTimingMongo;
+
+
+
+// Post curation analysis for understanding HF20
+// ---------------------------------------------
+async function postCurationMongo(db, openBlock, closeBlock) {
+    let curationPost = [];
+    await db.collection('comments').aggregate([
+        { $match :  {$and:[
+                        {operations: 'author_reward'},
+                        {payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                        {"author_payout.vests": {$gte: 10000}},
+                    ]}},
+        { $project : {  _id: 0, timestamp: 1, payout_timestamp: 1, curator_payout: {vests: 1},
+                        author_payout: {steem: 1, sbd: 1, vests: 1}, rshares: 1, author: 1, permlink: 1, payout_blockNumber: 1,
+                        curators: {curation_weight: 1, vests: 1, vote_timestamp: 1, rshares: 1 },
+                     }},
+        { $sort: {"author_payout.vests": -1, "curator_payout.vests": -1}},
+        { $unwind : "$curators" },
+        { $project : {  _id: 0, timestamp: 1, payout_timestamp: 1, curator_payout: {vests: 1},
+                        author_payout: {steem: 1, sbd: 1, vests: 1}, rshares: 1, author: 1, permlink: 1, payout_blockNumber: 1,
+                        curators: {
+                            curation_weight: 1, vests: 1, vote_timestamp: 1, rshares: 1,
+                            lost_weight: {"$cond": [{ "$gt": [ "$curators.vests", null] }, 0, "$curators.curation_weight" ]},
+                            vote_minutes: { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, 60000]}  ,
+                            vote_minutes15: { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, (60000 * 15)]}  ,
+                            vote_proportion_rewardpool:{ $cond: [{ $gt: [ { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, (60000 * 15)] } , 1]}, 0, { $subtract: [1 , { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, (60000 * 15)]}  ]}  ]} ,
+                            rshares_rewardpool: { $multiply: [ { $multiply: [ "$curators.rshares", { $cond: [{ $gt: [ { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, (60000 * 15)] } , 1]}, 0, { $subtract: [1 , { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, (60000 * 15)]} ]} ]} ]} ,0.250  ]}, // only 25% of rshares can go to reward pool
+                            curation_vests_full: { $divide: [ "$curators.vests", { $subtract: [ 1 , { $cond: [{ $gt: [ { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, (60000 * 15)] } , 1]}, 0, { $subtract: [1 , { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, (60000 * 15)]} ]} ]}  ]}   ]},
+                            vests_weight_ratio: { $divide: [ "$curators.vests", "$curators.curation_weight" ]}
+                        }
+                     }},
+        { $group : {  _id: {author: "$author", permlink: "$permlink"},
+                        curators:
+                            { "$push":
+                                { vests: "$curators.vests", vote_timestamp: "$curators.vote_timestamp",
+                                  vote_minutes: "$curators.vote_minutes", vote_minutes15: "$curators.vote_minutes15",
+                                  vote_proportion_rewardpool: "$curators.vote_proportion_rewardpool",
+                                  rshares_rewardpool: "$curators.rshares_rewardpool",
+                                   rshares: "$curators.rshares",
+                                   curation_vests_full: "$curators.curation_vests_full",
+                                   vests_weight_ratio: "$curators.vests_weight_ratio",
+                                   lost_weight: "$curators.lost_weight",
+                                }
+                            },
+                        author_payout: {"$first": {steem: "$author_payout.steem", sbd: "$author_payout.sbd", vests: "$author_payout.vests"} },
+                        curator_payout: {"$first": {vests: "$curator_payout.vests"} },
+                        lost_weight: {$sum: "$curators.lost_weight"},
+                        weight: {$sum: "$curators.curation_weight"},
+                        rshares_sum: {$sum: "$curators.rshares"},
+                        rshares_rewardpool: {$sum: "$curators.rshares_rewardpool"},
+                        vests_sum: {$sum: "$curators.vests"},
+                        curation_vests_full: {$sum: "$curators.curation_vests_full"},
+                        rshares: {"$first": "$rshares"},
+                  }},
+        { $sort: {rshares_rewardpool: -1}}
+        ]).toArray()
+        .then(function(records) {
+            let i = 0;
+            for (let record of records) {
+                if (i < 5) {
+                    record.author = record._id.author;
+                    record.permlink = record._id.permlink;
+                    delete record._id;
+                    console.dir(record, {depth: null});
+                    curationPost.push(record);
+                    i += 1;
+                }
+            }
+        })
+        return curationPost;
+}
+
+module.exports.postCurationMongo = postCurationMongo;

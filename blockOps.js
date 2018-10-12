@@ -61,6 +61,8 @@ if (commandLine == 'setup') {
     investigation();
 } else if (commandLine == 'findcurator') {
     findCurator();
+} else if (commandLine == 'postcuration') {
+    postCuration();
 } else if (commandLine == 'validate') {
     validateComments();
 } else if (commandLine == 'showblock') {
@@ -850,4 +852,52 @@ async function voteTiming() {
     }
     console.log('closing mongo db');
     client.close();
+}
+
+
+
+// Post curation for a single block
+// --------------------------------
+async function postCuration() {
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        console.log('Getting curation posts.');
+        let curationPosts = await mongoblock.postCurationMongo(db, openBlock, closeBlock);
+
+        console.dir(curationPosts, {depth: null})
+        for (let post of curationPosts) {
+            console.log('Getting comment.');
+            await steemrequest.getComment(post.author, post.permlink)
+                .then(async function(body) {
+                    let result = JSON.parse(body).result;
+                    post.curator_payout_value = Number(result.curator_payout_value.split(' ', 1)[0]);
+                    post.author_payout_value = Number(result.total_payout_value.split(' ', 1)[0]);
+                    post.beneficiaries_payout_value = 0;
+                    post.total_payout_value = Number((post.curator_payout_value + post.author_payout_value).toFixed(3));
+                    beneficiariesSum = 0;
+                    if (result.beneficiaries.length > 0) {
+                        for (var i = 0; i < result.beneficiaries.length; i+=1) {
+                            beneficiariesSum += result.beneficiaries[i].weight;
+                        }
+                        post.total_payout_value = Number(((post.author_payout_value / (1-(beneficiariesSum/10000))) + post.curator_payout_value).toFixed(3));
+                        post.beneficiaries_payout_value = Number((post.total_payout_value - post.author_payout_value - post.curator_payout_value).toFixed(3));
+                    }
+                    post.author_payout_perc = Number((post.author_payout_value / post.total_payout_value).toFixed(3));
+                    post.lost_weight_perc = Number((post.lost_weight / post.weight).toFixed(3));
+                    post.rshares_rewardpool_perc = Number((post.rshares_rewardpool / post.rshares).toFixed(4));
+                    post.author_payout_rewardpool_perc = Number((post.author_payout_value / (post.total_payout_value / (1 - post.rshares_rewardpool_perc))).toFixed(3));
+                    post.curator_payout_scaled = post.curator_payout_value * post.curation_vests_full / post.vests_sum;
+                    post.author_payout_vestsfull_perc = Number((post.author_payout_value / (post.total_payout_value - post.curator_payout_value + post.curator_payout_scaled)).toFixed(3));
+                    console.dir(post, {depth: null})
+                });
+        }
+        console.log('closing mongo db');
+        client.close();
+    } else {
+        console.log('Parameter issue');
+    }
 }
