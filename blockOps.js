@@ -47,6 +47,8 @@ if (commandLine == 'setup') {
     fillOperations();
 } else if (commandLine == 'fillprices') {
     fillPrices();
+} else if (commandLine == 'displayprices') {
+    displayPrices();
 } else if (commandLine == 'reportcomments') {
     // Market share reports on Steem applications
     reportComments();
@@ -527,6 +529,8 @@ async function blockRangeDefinition(db) {
 // ----------------------------------
 async function fillPrices() {
     let pricesArray = [];
+    let HF20 = 26256743;
+
     // Connect to Mongo
     client = await MongoClient.connect(url, { useNewUrlParser: true });
     console.log('Connected to server.');
@@ -539,59 +543,156 @@ async function fillPrices() {
     }
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+
+    let firstHour = await mongoblock.showBlockMongo(db, openBlock, false);
+    if (firstHour[0].hasOwnProperty('timestamp')) {
+        firstHourID = firstHour[0].timestamp.toISOString().slice(0, 13);
+    } else {
+        console.log('have blocks for date range been processed?')
+        parameterIssue = true;
+    }
+
+    let lastHour = await mongoblock.showBlockMongo(db, closeBlock-1, false);
+    if (lastHour[0].hasOwnProperty('timestamp')) {
+        lastHourID = lastHour[0].timestamp.toISOString().slice(0, 13);
+    } else {
+        console.log('have blocks for date range been processed?')
+        parameterIssue = true;
+    }
+
     if (parameterIssue == false) {
-        // Select a comment from each hour (around the 30 minute mark)
+        // Select a comment from each hour (around the 20-40 minute mark!)
         pricesArray = await mongoblock.mongoFillPrices(db, openBlock, closeBlock);
+        console.log(pricesArray)
 
-        // Skip prices that have previously been inserted to prices collection
-        let previousPrices = await db.collection('prices')
-            .find({payout_blockNumber: { $gte: openBlock, $lt: closeBlock }})
-            .project({_id: 0, date: 1})
-            .toArray();
+        // Check first and last hour present
+        let priceIssue = false;
 
-        let countSkips = 0;
-        for (let comment of pricesArray) {
-            priorFlag = false;
-            for (let priorDate of previousPrices) {
-                if (comment._id.year == priorDate.date.year && comment._id.month == priorDate.date.month && comment._id.day == priorDate.date.day && comment._id.hour == priorDate.date.hour) {
-                    priorFlag = true;
+        if (pricesArray[0]._id != firstHourID) {
+            console.log('price for first hour of date range is missing');
+            priceIssue = true;
+        }
+        if (pricesArray[pricesArray.length-1]._id != lastHourID) {
+            console.log('price for last hour of date range is missing');
+            priceIssue = true;
+        }
+
+        if (priceIssue == false) {
+            // Skip prices that have previously been inserted to prices collection
+            let previousPrices = await db.collection('prices')
+                .find({payout_blockNumber: { $gte: openBlock, $lt: closeBlock }})
+                .project({_id: 1})
+                .toArray();
+            let countSkips = 0;
+
+            // Loop through pricesArray starts here
+            for (let comment of pricesArray) {
+
+                let priorFlag = false;
+                for (let priorDate of previousPrices) {
+                    if (comment._id == priorDate._id) {
+                        priorFlag = true;
+                    }
+                }
+
+                if (priorFlag == true) {
+                    // Skips record
+                    countSkips += 1;
+                } else {
+                    // Pulls record and calculates currency rations using payout data from operations (vests, sbd, steem) and payout data from post (STU)
+                    await steemrequest.getComment(comment.author, comment.permlink)
+                        .then(async function(body) {
+                            result = JSON.parse(body).result;
+                            comment.basis = 'derived';
+                            //comment._id = comment.dateHour.toISOString().slice(0, 13);
+                            comment.curator_payout_vests = Number(comment.curator_payout_vests.toFixed(6));
+                            comment.curator_payout_value = Number(result.curator_payout_value.split(' ', 1)[0]);
+                            comment.author_payout_value = Number(result.total_payout_value.split(' ', 1)[0]);
+                            comment.beneficiaries_payout_value = 0;
+                            comment.total_payout_value = Number((comment.curator_payout_value + comment.author_payout_value).toFixed(3));
+                            beneficiariesSum = 0;
+                            if (result.beneficiaries.length > 0) {
+                                for (var i = 0; i < result.beneficiaries.length; i+=1) {
+                                    beneficiariesSum += result.beneficiaries[i].weight;
+                                }
+                                comment.total_payout_value = Number(((comment.author_payout_value / (1-(beneficiariesSum/10000))) + comment.curator_payout_value).toFixed(3));
+                                comment.beneficiaries_payout_value = Number((comment.total_payout_value - comment.author_payout_value - comment.curator_payout_value).toFixed(3));
+                            }
+                            comment.vestsPerSTU = Number((comment.curator_payout_vests / comment.curator_payout_value).toFixed(3));
+                            comment.steemPerSTU = 0;
+                            if (comment.author_payout_steem > 0) {
+                                comment.steemPerSTU = Number((comment.author_payout_steem / (comment.author_payout_value - comment.author_payout_sbd - (comment.author_payout_vests/comment.vestsPerSTU))).toFixed(3));
+                            }
+
+                            if (comment.payout_blockNumber < HF20) {
+                                console.log('HF19')
+                                comment.rsharesPerSTU = Number((comment.rshares / comment.total_payout_value).toFixed(3));
+                            } else {
+                                console.log('HF20')
+                                comment.rsharesPerSTU = Number(((comment.rshares * 0.75) / (comment.author_payout_value + comment.beneficiaries_payout_value)).toFixed(3));
+                            }
+                            await mongoblock.mongoPrice(db, comment, 0);
+
+                            console.log(comment)
+                    })
                 }
             }
+        console.log(countSkips + ' record skips as already exits in prices collection.')
 
-            if (priorFlag == true) {
-                // Skips record
-                countSkips += 1;
-            } else {
-                // Pulls record and calculates currency rations using payout data from operations (vests, sbd, steem) and payout data from post (STU)
-                await steemrequest.getComment(comment.author, comment.permlink)
-                    .then(async function(body) {
-                        result = JSON.parse(body).result;
-                        comment.date = comment._id;
-                        delete comment._id;
-                        comment.curator_payout_vests = Number(comment.curator_payout_vests.toFixed(6));
-                        comment.curator_payout_value = Number(result.curator_payout_value.split(' ', 1)[0]);
-                        comment.author_payout_value = Number(result.total_payout_value.split(' ', 1)[0]);
-                        comment.beneficiaries_payout_value = 0;
-                        comment.total_payout_value = Number((comment.curator_payout_value + comment.author_payout_value).toFixed(3));
-                        beneficiariesSum = 0;
-                        if (result.beneficiaries.length > 0) {
-                            for (var i = 0; i < result.beneficiaries.length; i+=1) {
-                                beneficiariesSum += result.beneficiaries[i].weight;
-                            }
-                            comment.total_payout_value = Number(((comment.author_payout_value / (1-(beneficiariesSum/10000))) + comment.curator_payout_value).toFixed(3));
-                            comment.beneficiaries_payout_value = Number((comment.total_payout_value - comment.author_payout_value - comment.curator_payout_value).toFixed(3));
+        let updatedPrices = await db.collection('prices')
+            .find({payout_blockNumber: { $gte: openBlock, $lt: closeBlock }})
+            .project({_id: 1, vestsPerSTU: 1, steemPerSTU: 1, rsharesPerSTU:1 })
+            .toArray();
+
+        for (var j = 0; j < updatedPrices.length-1; j+=1) {
+            let nextDate = new Date(updatedPrices[j+1]._id + ':00:00.000Z');
+            let currentDate = new Date(updatedPrices[j]._id + ':00:00.000Z');
+            if ( nextDate - currentDate > (1000 * 60 * 60)) {
+                // interpolate
+                console.log('interpolating...')
+                let gapsNumber = Number(((nextDate - currentDate) / (1000 * 60 * 60)).toFixed(0));
+                for (var k = 1; k < gapsNumber; k+=1) {
+                    let interpolatedDate = new Date(currentDate.getTime() + ((1000 * 60 * 60) * k));
+                    let interpolate =
+                        {   _id: interpolatedDate.toISOString().slice(0, 13),
+                            basis: 'interpolated',
+                            vestsPerSTU: (updatedPrices[j].vestsPerSTU + (k * (updatedPrices[j+1].vestsPerSTU - updatedPrices[j].vestsPerSTU) / gapsNumber)),
+                            steemPerSTU: (updatedPrices[j].steemPerSTU + (k * (updatedPrices[j+1].steemPerSTU - updatedPrices[j].steemPerSTU) / gapsNumber)),
+                            rsharesPerSTU: (updatedPrices[j].rsharesPerSTU + (k * (updatedPrices[j+1].rsharesPerSTU - updatedPrices[j].rsharesPerSTU) / gapsNumber))
                         }
-                        comment.vestsPerSTU = Number((comment.curator_payout_vests / comment.curator_payout_value).toFixed(3));
-                        comment.rsharesPerSTU = Number((comment.rshares / comment.total_payout_value).toFixed(3));
-                        comment.steemPerSTU = 0;
-                        if (comment.author_payout_steem > 0) {
-                            comment.steemPerSTU = Number((comment.author_payout_steem / (comment.author_payout_value - comment.author_payout_sbd - (comment.author_payout_vests/comment.vestsPerSTU))).toFixed(3));
-                        }
-                        await mongoblock.mongoPrice(db, comment, 0);
-                })
+                    // update to prices
+                    await mongoblock.mongoPrice(db, interpolate, 0);
+                }
             }
         }
-        console.log(countSkips + ' record skips as already exits in prices collection.')
+        console.log('closing mongo db');
+        client.close();
+        }
+    } else {
+        console.log('Parameter issue');
+    }
+}
+
+
+// Function to display and export prices over specific dates
+// ----------------------------------------------------------
+// allows date graphs to be produced for reasonableness checks
+async function displayPrices() {
+    // Connect to Mongo
+    let displayPrices = [];
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        displayPrices = await mongoblock.obtainPricesMongo(db, openBlock, closeBlock);
+        for (let price of displayPrices) {
+            console.log(price)
+        }
+        const fieldNames = ['_id', 'vestsPerSTU', 'steemPerSTU', 'rsharesPerSTU'];
+        postprocessing.dataExport(displayPrices.slice(0), 'prices_export', fieldNames);
+
         console.log('closing mongo db');
         client.close();
     } else {

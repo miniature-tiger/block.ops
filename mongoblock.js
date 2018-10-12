@@ -655,19 +655,22 @@ module.exports.validateComments = validateComments;
 // -------------------------------------------------------------------------
 async function mongoFillPrices(db, openBlock, closeBlock) {
     console.log(openBlock, closeBlock)
-    return db.collection('comments').aggregate([
+    let commentsForPrices = [];
+
+    await db.collection('comments').aggregate([
         { $match :  {$and:[
-                      {operations: 'author_reward'},
-                      {payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                      { operations: 'author_reward'},
+                      { "author_payout.vests": { $gte: 250}},
+                      { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
                     ]}},
-        { $project : {_id: 0, dateObject: {$dateToParts: {date: "$payout_timestamp"}}, "curator_payout.vests": 1, "author_payout.steem": 1, "author_payout.sbd": 1, "author_payout.vests": 1, rshares: 1, author: 1, permlink: 1, payout_blockNumber: 1 }},
+        { $project : {_id: 0, payout_timestamp: 1, dateObject: {$dateToParts: {date: "$payout_timestamp"}}, "curator_payout.vests": 1, "author_payout.steem": 1, "author_payout.sbd": 1, "author_payout.vests": 1, rshares: 1, author: 1, permlink: 1, payout_blockNumber: 1 }},
         { $match :  {$and:[
-                      {"dateObject.minute": { $gte: 29, $lte: 30}},
-                      //{"dateObject.second": { $gte: 0, $lte: 59}},
+                      {"dateObject.minute": { $gte: 20, $lte: 40}},
                       {"curator_payout.vests": { $gt: 0}}
                     ]}},
         { $sort: {"dateObject.year": 1, "dateObject.month": 1, "dateObject.day": 1, "dateObject.hour": 1, "author_payout.steem": -1, "curator_payout.vests": -1}},
         { $group : {_id: {year: "$dateObject.year", month: "$dateObject.month", day: "$dateObject.day", hour: "$dateObject.hour"},
+                          dateHour: {$first: "$payout_timestamp"},
                           author: {$first: "$author"},
                           permlink: {$first: "$permlink"},
                           payout_blockNumber: {$first: "$payout_blockNumber"},
@@ -678,7 +681,15 @@ async function mongoFillPrices(db, openBlock, closeBlock) {
                           rshares: {$first: "$rshares"},
                   }},
         { $sort: {payout_blockNumber: 1}}
-        ]).toArray();
+        ])
+        .toArray()
+        .then(function(prices) {
+            for (let price of prices) {
+                price._id = price.dateHour.toISOString().slice(0, 13);
+            }
+            commentsForPrices = prices;
+        })
+        return commentsForPrices;
 }
 
 module.exports.mongoFillPrices = mongoFillPrices;
@@ -706,6 +717,22 @@ function mongoPrice(db, localRecord, reattempt) {
 }
 
 module.exports.mongoPrice = mongoPrice;
+
+
+
+// Function to aggregate price information over date range
+// -------------------------------------------------------
+async function obtainPricesMongo(db, openBlock, closeBlock) {
+
+    return await db.collection('prices').aggregate([
+            { $match :    {payout_blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+            { $project :  {_id: 1, vestsPerSTU: 1, rsharesPerSTU: 1, steemPerSTU: 1}},
+            { $sort: {_id: 1 }},
+        ])
+        .toArray();
+}
+
+module.exports.obtainPricesMongo = obtainPricesMongo;
 
 
 
