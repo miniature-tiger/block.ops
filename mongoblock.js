@@ -571,7 +571,7 @@ async function mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, 
                     } else {
                         console.log('null response from mongoActiveProcessed <', localActiveBlockNumber, '>. Maximum reattempts surpassed. Error logged.');
                         let errorRecord = {blockNumber: localActiveBlockNumber, status: 'error'};
-                        mongoblock.mongoErrorLog(db, errorRecord, 0);
+                        mongoErrorLog(db, errorRecord, 0);
                     }
                 } else if ((response.value.operationsCount == response.value.operationsProcessed) && (response.value.activeVoteSetCount == response.value.activeVoteSetProcessed) && (response.value.status == 'Processing')) {
                     db.collection('blocksProcessed').updateOne({ blockNumber: localActiveBlockNumber}, {$set: {status: 'OK'}})
@@ -811,40 +811,50 @@ module.exports.reportCommentsMongo = reportCommentsMongo;
 
 // Function shows detail of a single block document from blocksProcessed
 // ---------------------------------------------------------------------
-async function showBlockMongo(db, openBlock) {
+async function showBlockMongo(db, localBlock, localDisplay) {
       // Provide additional detail on error / processing blocks for debugging
+      let blockFound = [];
       await db.collection('blocksProcessed').aggregate([
-              { $match : {blockNumber: { $gte: openBlock, $lte: openBlock}}}
+              { $match : {blockNumber: { $gte: localBlock, $lte: localBlock}}}
           ]).toArray()
           .then(function(records) {
               for (let record of records) {
                   delete record._id;
-                  console.dir(record, {depth: null});
+                  if (localDisplay == true) {
+                      console.dir(record, {depth: null});
+                  }
               }
+              blockFound = records;
           })
           .catch(function(error) {
               console.log(error);
           });
-      console.log('------------------------------------------------------------------------');
 
-      await db.collection('blocksProcessed').aggregate([
-              { $match : {blockNumber: { $gte: openBlock, $lte: openBlock}}},
-              { $project : {_id: 0, operations: 1 }},
-              { $unwind : "$operations"},
-              { $sort : {"operations.virtualOp": 1, "operations.transactionNumber": 1, "operations.operationNumber": 1, }},
-          ]).toArray()
-          .then(function(records) {
-              for (let record of records) {
-                  delete record._id;
-                  console.dir(record, {depth: null});
-              }
-          })
-          .catch(function(error) {
-              console.log(error);
-          });
-      console.log('------------------------------------------------------------------------');
-      console.log('closing mongo db');
-      client.close();
+      if (localDisplay == true) {
+          console.log('------------------------------------------------------------------------');
+
+          await db.collection('blocksProcessed').aggregate([
+                  { $match : {blockNumber: { $gte: localBlock, $lte: localBlock}}},
+                  { $project : {_id: 0, operations: 1 }},
+                  { $unwind : "$operations"},
+                  { $sort : {"operations.virtualOp": 1, "operations.transactionNumber": 1, "operations.operationNumber": 1, }},
+              ]).toArray()
+              .then(function(records) {
+                  for (let record of records) {
+                      delete record._id;
+                      console.dir(record, {depth: null});
+                  }
+              })
+              .catch(function(error) {
+                  console.log(error);
+              });
+          console.log('------------------------------------------------------------------------');
+          console.log('closing mongo db');
+          client.close();
+      } else {
+          return blockFound;
+      }
+
 }
 
 module.exports.showBlockMongo = showBlockMongo;
@@ -990,9 +1000,8 @@ function findCommentsMongo(localApp, db, openBlock, closeBlock) {
     db.collection('comments').find(
 
         {$and : [
-            { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
-            //{operations: 'comment'},
-            //{operations: 'vote'},
+            { blockNumber: { $gte: openBlock, $lt: closeBlock }},
+            { operations: 'comment'},
             //{operations: 'author_reward'},
         ]}
 

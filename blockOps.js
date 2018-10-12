@@ -23,7 +23,7 @@ const postprocessing = require('./postprocessing.js')
 // -------
 const MongoClient = mongodb.MongoClient;
 const url = 'mongodb://localhost:27017';
-const dbName = 'blockOpsTesting';
+const dbName = 'blockOps2';
 
 
 // Command Line inputs and parameters
@@ -275,6 +275,8 @@ async function fillOperations() {
     let priorArrayCount = 0;
     let blocksOK = 0;
     let blockProcessArray = [];
+    let blockProcessArrayFlag = false;
+    let debug = false;
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     console.log(openBlock, closeBlock, parameterIssue);
@@ -282,32 +284,37 @@ async function fillOperations() {
     blocksToProcess = closeBlock - openBlock;
     console.log(openBlock, blocksToProcess);
 
-    fiveBlock();
+    fiveBlock('original');
 
     // Function to extract data of x blocks from the blockchain (originally five blocks)
     // ---------------------------------------------------------------------------------
-    async function fiveBlock() {
-
+    async function fiveBlock(localMarker) {
+        if(debug == true) {console.log('localMarker', localMarker)};
         let launchBlocks = Math.min(blocksPerRound, blocksToProcess - blocksStarted - blocksOK);
         console.log(launchBlocks, blocksToProcess - blocksStarted - blocksOK);
         for (var i = 0; i < launchBlocks; i+=1) {
+            //console.log('blocksStarted - priorArrayCount == blockProcessArray.length', blocksStarted, - priorArrayCount, blockProcessArray.length)
             if(blocksStarted - priorArrayCount == blockProcessArray.length) {
+                blockProcessArrayFlag = true;
                 do {
                     priorArrayCount += blockProcessArray.length;
+                    if(debug == true) {console.log('localMarker', localMarker, 'ARRAY CALLED', openBlock + priorArrayCount + blocksOK, Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock)-1)};
                     blockProcessArray = await mongoblock.reportBlocksProcessed(db, openBlock + priorArrayCount + blocksOK, Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock), 'return');
-                    console.log('array called', openBlock + priorArrayCount + blocksOK, Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock)-1);
                     blocksOK += ( Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock) - (openBlock + priorArrayCount + blocksOK) - blockProcessArray.length);
-                    console.log('blocksOK', blocksOK);
+                    if(debug == true) {console.log('blocksOK updated from last array call:', localMarker, blocksOK)};
                 }
                 while (blockProcessArray.length == 0 && (blocksStarted + blocksOK < blocksToProcess));
+                blockProcessArrayFlag = false;
 
                 // Reset operations counter in blocksProcessed for blocks being rerun
                 mongoblock.resetBlocksProcessed(db, blockProcessArray[0], blockProcessArray[blockProcessArray.length-1]);
             }
 
             if (blocksStarted + blocksOK < blocksToProcess) {
+                if(debug == true) {console.log('localMarker, blockNo = blockProcessArray[blocksStarted - priorArrayCount]:', localMarker, blocksStarted, priorArrayCount, blocksStarted - priorArrayCount)};
                 blockNo = blockProcessArray[blocksStarted - priorArrayCount];
                 // Gets data for one block, processes it in callback "processOps"
+                if(debug == true) {console.log('getOpsAppBase', blockNo)};
                 steemrequest.getOpsAppBase(blockNo, processOps);
                 blocksStarted += 1;
             } else {
@@ -324,6 +331,10 @@ async function fillOperations() {
         if (!error) {
             try {
                 let result = JSON.parse(body).result;
+                if( result == undefined) {
+                    console.log(localBlockNo)
+                    console.dir(JSON.parse(body), {depth: null})
+                }
                 //console.dir(JSON.parse(body), {depth: null})
                 let numberOfOps = result.length;
                 let opsNotHandled = 0;
@@ -336,10 +347,14 @@ async function fillOperations() {
 
                 // Setting check number for number of active_votes sets to be processed in a block
                 for (let operation of result) {
-                    if (operation.op[0] == 'author_reward') {
-                        authorRewardCount += 1;
+                    if (operation.virtual_op != virtualOpNumber) {
+                        virtualOpNumber = operation.virtual_op;
+                        if (operation.op[0] == 'author_reward') {
+                            authorRewardCount += 1;
+                        }
                     }
                 }
+                virtualOpNumber = 0;
 
                 // Add block document to blocksProcessed collection in Mongo
                 let blockRecord = {blockNumber: localBlockNo, timestamp: timestamp, status: 'Processing', operationsCount: numberOfOps, activeVoteSetCount: authorRewardCount, activeVoteSetProcessed: 0};
@@ -396,13 +411,15 @@ async function fillOperations() {
                 mongoblock.mongoOperationProcessed(db, localBlockNo, recordOperation, opsNotHandled + skippedOperations, 0);
                 blocksCompleted += 1;
 
+                if(debug == true) {console.log('blocksStarted - blocksCompleted', blocksStarted, - blocksCompleted)};
                 if (blocksCompleted + blocksOK == blocksToProcess) {
                     completeOperationsLoop();
 
-                } else if (blocksStarted - blocksCompleted < 4) {
-                    fiveBlock();
+                } else if ((blocksStarted - blocksCompleted < 4) && (blockProcessArrayFlag == false)) {
+                    fiveBlock('marker' + blocksStarted);
                 }
             } catch (error) {
+                console.log(error)
                 console.log('Error in processing virtual ops:', localBlockNo, 'Error logged.');
                 let errorRecord = {blockNumber: localBlockNo, status: 'error'};
                 mongoblock.mongoErrorLog(db, errorRecord, 0);
@@ -413,6 +430,7 @@ async function fillOperations() {
             console.log('Error in processing virtual ops:', localBlockNo);
             if (error.errno = 'ENOTFOUND') {
                 console.log('ENOTFOUND: Most likely error is connection lost. Error logged.'); // to do: deal with checking which blocks loaded, reconnecting, and restarting loop.
+                console.log(error);
             } else {
                 console.log(error);
             }
@@ -706,6 +724,7 @@ async function displayPrices() {
 }
 
 
+
 // Function to provide parameters for reportBlocksProcessed
 // --------------------------------------------------------
 async function reportBlocks() {
@@ -720,6 +739,7 @@ async function reportBlocks() {
         console.log('Parameter issue');
     }
 }
+
 
 
 // Function to provide parameters for findCommentsMongo
@@ -751,7 +771,7 @@ async function reportComments() {
         let marketShareSummary = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock);
         let exportData = postprocessing.marketShareProcessing(marketShareSummary);
         const fieldNames = ['application', 'authors', 'authorsRank', 'posts', 'postsRank', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_vests', 'curator_payout_vests'];
-        postprocessing.dataExport(exportData.slice(0), 'marketShareTest', fieldNames);
+        //postprocessing.dataExport(exportData.slice(0), 'marketShareTest', fieldNames);
         console.log('');
         console.log('closing mongo db');
         console.log('------------------------------------------------------------------------');
@@ -822,7 +842,7 @@ async function showBlock() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    await mongoblock.showBlockMongo(db, Number(parameter1));
+    await mongoblock.showBlockMongo(db, Number(parameter1), true);
 }
 
 
