@@ -1249,3 +1249,137 @@ async function validateCommentsMongo(db, openBlock, closeBlock) {
 }
 
 module.exports.validateCommentsMongo = validateCommentsMongo;
+
+
+
+// Vote timing analysis: Covers all posts (not comments), all users / self-votes / a parameterised user group
+// ----------------------------------------------------------------------------------------------------------
+async function voteTimingMongo(db, openBlock, closeBlock, userGroup) {
+    let voteBreakdown = [];
+    let boundaryArray = [];
+    let secondBuckets = 60; // 60 = 1 minute buckets, 60 * 60 = 1 hour buckets
+    let analysisDurationSeconds = 60 * 60; // 60 * 60 = first hour breakdown, 60 * 60 * 24 * 7 = full week breakdown
+    let numberOfBuckets = analysisDurationSeconds / secondBuckets;
+
+    for (var i = 0; i < numberOfBuckets + 1; i+=1) {
+        boundaryArray.push(i * secondBuckets * 1000)
+    }
+
+    await db.collection('comments').aggregate([
+            { $match :
+                { $and :[
+                    { blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                    { transactionType: { $ne: 'commentEdit' }},
+                    { postComment: 0 },
+                    { operations : 'active_votes' },
+                ]}},
+            { $unwind : "$curators" },
+            { $project : {  _id: 0, author: 1, "curators.voter": 1,
+                            self_vote: {$cond: { if: { $eq: [ "$author", "$curators.voter"] }, then: "self", else: "other" }},
+                            userGroup: {$cond: { if: { $in: [ "$curators.voter", userGroup] }, then: true, else: false }},
+                            timestamp: 1,
+                            curators: {vote_timestamp: 1, dateHour: {$substr: ["$curators.vote_timestamp", 0, 13]},
+                            //curators: {vote_timestamp: 1, dateHour: {$substr: ["$payout_timestamp", 0, 13]},
+                            dateObject: {$dateToParts: {date: "$curators.vote_timestamp"}}, rshares: 1, vests: 1, percent: 1,
+                            vote_mseconds: { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}}}},
+            { $lookup : {   from: "prices",
+                            localField: "curators.dateHour",
+                            foreignField: "_id",
+                            as: "curator_vote_prices"   }},
+            { $project : {_id: 0, timestamp: 1, self_vote: 1, userGroup: 1, "curator_vote_prices": { "$arrayElemAt": [ "$curator_vote_prices", 0 ]} ,
+                              curators: {vote_timestamp: 1, rshares: 1, vests: 1, percent: 1, vote_mseconds: 1 }}}, //
+            { $project : {_id: 0, timestamp: 1, self_vote: 1, userGroup: 1, "curator_vote_prices.rsharesPerSTU": 1,
+                              vote_value: { $divide: [ "$curators.rshares", "$curator_vote_prices.rsharesPerSTU" ]},
+                              curator_payout_value: { $divide: [ "$curators.vests", "$curator_vote_prices.vestsPerSTU" ]},
+                              curators: {vote_timestamp: 1, rshares: 1, vests: 1, percent: 1, vote_mseconds: 1 }}},
+            { $facet: {
+                "all": [
+                    { $bucket: {
+                          groupBy: "$curators.vote_mseconds",
+                          boundaries: boundaryArray,
+                          default: "other",
+                          output: {
+                             "rshares": { $sum: "$curators.rshares"},
+                             "upvote_rshares": { $sum : { $cond: [{ $gte: ['$curators.rshares', 0]}, "$curators.rshares", 0]}},
+                             "downvote_rshares": { $sum : { $cond: [{ $lt: ['$curators.rshares', 0]}, "$curators.rshares", 0]}},
+                             "vote_value": { $sum: "$vote_value"},
+                             "upvote_vote_value": { $sum : { $cond: [{ $gte: ['$vote_value', 0]}, "$vote_value", 0]}},
+                             "downvote_vote_value": { $sum : { $cond: [{ $lt: ['$vote_value', 0]}, "$vote_value", 0]}},
+                             "curator_vests": { $sum: "$curators.vests"},
+                             "curator_payout_value": { $sum: "$curator_payout_value"},
+                             "count": { $sum: 1 }
+
+                          }
+                       }
+                    }
+                ],
+                "userGroup": [
+                    { $match : { userGroup: true }},
+                    { $bucket: {
+                          groupBy: "$curators.vote_mseconds",
+                          boundaries: boundaryArray,
+                          default: "other",
+                          output: {
+                             "rshares": { $sum: "$curators.rshares"},
+                             "upvote_rshares": { $sum : { $cond: [{ $gte: ['$curators.rshares', 0]}, "$curators.rshares", 0]}},
+                             "downvote_rshares": { $sum : { $cond: [{ $lt: ['$curators.rshares', 0]}, "$curators.rshares", 0]}},
+                             "vote_value": { $sum: "$vote_value"},
+                             "upvote_vote_value": { $sum : { $cond: [{ $gte: ['$vote_value', 0]}, "$vote_value", 0]}},
+                             "downvote_vote_value": { $sum : { $cond: [{ $lt: ['$vote_value', 0]}, "$vote_value", 0]}},
+                             "curator_vests": { $sum: "$curators.vests"},
+                             "curator_payout_value": { $sum: "$curator_payout_value"},
+                             "count": { $sum: 1 }
+                          }
+                       }
+                    }
+                ],
+                "self_votes": [
+                    { $match : { self_vote: 'self'}},
+                    { $bucket: {
+                          groupBy: "$curators.vote_mseconds",
+                          boundaries: boundaryArray,
+                          default: "other",
+                          output: {
+                             "rshares": { $sum: "$curators.rshares"},
+                             "upvote_rshares": { $sum : { $cond: [{ $gte: ['$curators.rshares', 0]}, "$curators.rshares", 0]}},
+                             "downvote_rshares": { $sum : { $cond: [{ $lt: ['$curators.rshares', 0]}, "$curators.rshares", 0]}},
+                             "vote_value": { $sum: "$vote_value"},
+                             "upvote_vote_value": { $sum : { $cond: [{ $gte: ['$vote_value', 0]}, "$vote_value", 0]}},
+                             "downvote_vote_value": { $sum : { $cond: [{ $lt: ['$vote_value', 0]}, "$vote_value", 0]}},
+                             "curator_vests": { $sum: "$curators.vests"},
+                             "curator_payout_value": { $sum: "$curator_payout_value"},
+                             "count": { $sum: 1 }
+                          }
+                       }
+                    }
+                ],
+            }}
+        ])
+        .toArray()
+        .then(function(voteAnalyses) {
+            Object.keys(voteAnalyses[0]).forEach(function(voteAnalysis) {
+                let i = 0;
+                for (let voteBucket of voteAnalyses[0][voteAnalysis]) {
+                    if (voteBucket._id != "other") {
+                        voteBucket.bucket = (voteBucket._id / (secondBuckets * 1000))
+                    } else {
+                        voteBucket.bucket = "other";
+                    }
+                    delete voteBucket._id
+                    voteBucket.vote_value = Number(voteBucket.vote_value.toFixed(3));
+                    voteBucket.upvote_vote_value = Number(voteBucket.upvote_vote_value.toFixed(3));
+                    voteBucket.downvote_vote_value = Number(voteBucket.downvote_vote_value.toFixed(3));
+                    voteBucket.curator_vests = Number(voteBucket.curator_vests.toFixed(3));
+                    voteBucket.curator_payout_value = Number(voteBucket.curator_payout_value.toFixed(3));
+                    voteBucket.curation_ratio = Number((voteBucket.curator_payout_value / voteBucket.upvote_vote_value).toFixed(3));
+                }
+            })
+            voteBreakdown = voteAnalyses[0];
+            console.log('------------------------------------------------------------------------');
+        }).catch(function(error) {
+            console.log(error);
+        });
+    return voteBreakdown;
+}
+
+module.exports.voteTimingMongo = voteTimingMongo;

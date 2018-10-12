@@ -15,6 +15,7 @@ const mongodb = require('mongodb');
 const steemrequest = require('./steemrequest/steemrequest.js')
 const mongoblock = require('./mongoblock.js')
 const helperblock = require('./helperblock.js')
+const steemdata = require('./steemdata.js')
 const postprocessing = require('./postprocessing.js')
 
 
@@ -64,6 +65,8 @@ if (commandLine == 'setup') {
     validateComments();
 } else if (commandLine == 'showblock') {
     showBlock();
+} else if (commandLine == 'votetiming') {
+    voteTiming();
 } else {
     // end
 }
@@ -810,12 +813,41 @@ async function validateComments() {
 
 
 
-// Set-up for validation routines for comments
-// -------------------------------------------
+// Set-up for routine to show a single block
+// -----------------------------------------
 async function showBlock() {
     client = await MongoClient.connect(url, { useNewUrlParser: true });
     console.log('Connected to server.');
     const db = client.db(dbName);
 
     await mongoblock.showBlockMongo(db, Number(parameter1));
+}
+
+
+
+// Vote-timing histogram and curation rewards v votes ratio analysis - includes export
+// -----------------------------------------------------------------------------------
+async function voteTiming() {
+    let voteTimingArray = [];
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+
+        let voteTimingArray = await mongoblock.voteTimingMongo(db, openBlock, closeBlock, steemdata.bidbotArray);
+        const fieldNames = ['bucket', 'rshares', 'upvote_rshares', 'downvote_rshares', 'vote_value', 'upvote_vote_value', 'downvote_vote_value', 'curator_vests', 'curator_payout_value', 'curation_ratio', 'count'];
+
+        Object.keys(voteTimingArray).forEach(function(voteAnalysis) {
+            console.log(voteAnalysis);
+            console.dir(voteTimingArray[voteAnalysis], {depth: null})
+            postprocessing.dataExport(voteTimingArray[voteAnalysis].slice(0), voteAnalysis, fieldNames);
+        })
+
+    } else {
+        console.log('Parameter issue');
+    }
+    console.log('closing mongo db');
+    client.close();
 }
