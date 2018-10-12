@@ -1057,10 +1057,79 @@ function findCuratorMongo(voter, db, openBlock, closeBlock) {
     let steemPerVests = 0.00049495; // Temporary while indexes are built for all the various currencies and measures!
     let rsharesToVoteValue = 867700000000; // Temporary while indexes are built for all the various currencies and measures!
     console.log(openBlock, closeBlock, voter);
-    let minRshares = 50000000000; // 50bn
+    let minRshares = 100000000000; // 100bn
+
+    if (voter == "topvoters") {
+        db.collection('comments').aggregate([
+                { $match :  {$and :[
+                                { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                                { operations: 'author_reward'},
+                            ]} },
+                { $unwind : "$curators" },
+                { $project : { author: 1, permlink: 1, blockNumber: 1,
+                                curators: {vote_timestamp: 1, voter: 1, vests: 1, rshares: 1, curation_weight: 1,
+                                  vote_minutes: { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, 60000]},
+                                  dateHour: {$substr: ["$curators.vote_timestamp", 0, 13]}}}},
+                { $lookup : {   from: "prices",
+                                localField: "curators.dateHour",
+                                foreignField: "_id",
+                                as: "curator_vote_prices"   }},
+                { $project : { _id: 0, curators: {voter: 1, vests: 1, rshares: 1, curation_weight: 1, dateHour: 1, vote_minutes: 1,
+                                          ratio: { $divide: [ "$curators.vests", "$curators.rshares"]},
+                                          edge_case: {$cond: { if: { $and: [ {$eq: [ "$curators.curation_weight", 0]}, {$gt: ["$curators.rshares", 500000000000]}, {$gt: ["$curators.vote_minutes", 0]}  ] }, then: true, else: false }},
+                                                  },
+                                "curator_vote_prices": { "$arrayElemAt": [ "$curator_vote_prices", 0 ]} ,
+                                 author: 1, permlink: 1, blockNumber: 1}},
+                { $project : { _id: 0, author: 1, permlink: 1, blockNumber: 1, curators: {voter: 1, ratio: 1, edge_case: 1, curation_weight: 1, vote_minutes: 1,
+                                          STU_vote_value: { $divide: [ "$curators.rshares", "$curator_vote_prices.rsharesPerSTU" ]},
+                                          STU_reward: { $divide: [ "$curators.vests", "$curator_vote_prices.vestsPerSTU" ]},
+                                        },
+                                  }},
+                { $group : {_id : {author: "$author", permlink: "$permlink", blockNumber: "$blockNumber"},
+                            curators: { "$push":
+                                { voter: "$curators.voter",
+                                  ratio: "$curators.ratio",
+                                  edge_case: "$curators.edge_case",
+                                  vote_minutes: "$curators.vote_minutes",
+                                  curation_weight: "$curators.curation_weight",
+                                  STU_vote_value: "$curators.STU_vote_value",
+                                  STU_reward: "$curators.STU_reward",
+                                }
+                            },
+                }},
+                { $match : {"curators.edge_case": {$not: {$eq: true}}}},
+                { $unwind : "$curators" },
+                { $group : {_id : {curator : "$curators.voter"},
+                            STU_vote_value: {$sum: "$curators.STU_vote_value"},
+                            STU_reward: {$sum: "$curators.STU_reward"},
+                            ratio_average: {$avg: "$curators.ratio"}
+                          }},
+                { $match : {STU_vote_value: { $gte: 1}}},
+                { $sort : { "ratio_average": -1}}
+            ], {allowDiskUse: true})
+            .toArray()
+            .then(function(curatorArray) {
+                let winners = [];
+                let i = 0;
+                for (let vote of curatorArray) {
+                    vote.STU_vote_value = Number((vote.STU_vote_value).toFixed(3));
+                    vote.STU_reward = Number((vote.STU_reward).toFixed(3));
+                    vote.ratio_average = Number((vote.ratio_average*1000000000).toFixed(3));
+                    vote.ratio_strict = Number((vote.STU_reward/vote.STU_vote_value).toFixed(3));
+                    if (i < 100) {
+                        console.dir(vote, {depth: null})
+                        winners.push(vote._id.curator);
+                    }
+                    i+=1;
+                }
+                console.log(winners)
+            })
+            .catch(function(error) {
+                console.log(error);
+            });
 
     // If no account name is chosen then all ratios are examined for all users and the top ones logged
-    if (voter == undefined) {
+    } else if (voter == undefined) {
         db.collection('comments').aggregate([
                 { $match :  {$and :[
                                 { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
@@ -1104,7 +1173,7 @@ function findCuratorMongo(voter, db, openBlock, closeBlock) {
         for (let vote of curatorArray) {
             if (i < 10) {
                 vote.curators.ratio = Number((vote.curators.ratio*1000000000).toFixed(3));
-                vote.curators.SP_reward = Number((vote.curators.SP_reward).toFixed(3));
+                vote.curators.STU_reward = Number((vote.curators.SP_reward).toFixed(3));
                 vote.curators.STU_vote_value = Number((vote.curators.STU_vote_value).toFixed(3));
                 console.dir(vote, { depth: null });
             }
