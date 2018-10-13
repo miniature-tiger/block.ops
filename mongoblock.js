@@ -463,7 +463,7 @@ function mongoBlockProcessed(db, localBlockRecord, reattempt) {
         .catch(function(error) {
             if(error.code == 11000) {
                 if (reattempt < maxReattempts) {
-                    console.log('E11000 error with <', localBlockRecord.blockNumber, '> mongoBlockProcessed. Re-attempting...');
+                    //console.log('E11000 error with <', localBlockRecord.blockNumber, '> mongoBlockProcessed. Re-attempting...');
                     mongoBlockProcessed(db, localBlockRecord, 1);
                 } else {
                     console.log('E11000 error with <', localBlockRecord.blockNumber, '> mongoBlockProcessed. Maximum reattempts surpassed.');
@@ -504,7 +504,7 @@ function mongoOperationProcessed(db, localBlockNumber, operationLog, operationsI
         .catch(function(error) {
             if(error.code == 11000) {
                 if (reattempt < maxReattempts) {
-                    console.log('E11000 error with <', localBlockNumber, operationLog, '> mongoOperationProcessed. Re-attempting...');
+                    //console.log('E11000 error with <', localBlockNumber, operationLog, '> mongoOperationProcessed. Re-attempting...');
                     mongoOperationProcessed(db, localBlockNumber, operationLog, operationsIncluded, 1);
                 } else {
                     console.log('E11000 error with <', localBlockNumber, operationLog, '> mongoOperationProcessed. Maximum reattempts surpassed.');
@@ -536,7 +536,7 @@ async function mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, 
                         .catch(function(error) {
                             if(error.code == 11000) {
                                 if (reattempt < maxReattempts) {
-                                    console.log('E11000 error with <', localActiveBlockNumber, '> mongoActiveProcessed. Re-attempting...');
+                                    //console.log('E11000 error with <', localActiveBlockNumber, '> mongoActiveProcessed. Re-attempting...');
                                     mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, activeVoteSetIncluded, startEnd, 1) ;
                                 } else {
                                     console.log('E11000 error with <', localActiveBlockNumber, '> mongoActiveProcessed. Maximum reattempts surpassed.');
@@ -1063,8 +1063,6 @@ module.exports.investigationMongo = investigationMongo;
 // Analysis of curator rewards: vests to rshares ratio for a single voter or all voters
 // ------------------------------------------------------------------------------------
 function findCuratorMongo(voter, db, openBlock, closeBlock) {
-    let steemPerVests = 0.00049495; // Temporary while indexes are built for all the various currencies and measures!
-    let rsharesToVoteValue = 867700000000; // Temporary while indexes are built for all the various currencies and measures!
     console.log(openBlock, closeBlock, voter);
     let minRshares = 100000000000; // 100bn
 
@@ -1072,20 +1070,22 @@ function findCuratorMongo(voter, db, openBlock, closeBlock) {
         db.collection('comments').aggregate([
                 { $match :  {$and :[
                                 { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
-                                { operations: 'author_reward'},
+                                { operations: 'curator_payout'},
                             ]} },
                 { $unwind : "$curators" },
-                { $project : { author: 1, permlink: 1, blockNumber: 1,
+                { $project : {  author: 1, permlink: 1, blockNumber: 1,
+                                rshares: 1,
+                                xPercsRShares: { $divide: [ "$rshares", 5 ]},
                                 curators: {vote_timestamp: 1, voter: 1, vests: 1, rshares: 1, curation_weight: 1,
-                                  vote_minutes: { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, 60000]},
-                                  dateHour: {$substr: ["$curators.vote_timestamp", 0, 13]}}}},
+                                    vote_minutes: { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, 60000]},
+                                    dateHour: {$substr: ["$curators.vote_timestamp", 0, 13]}}}},
                 { $lookup : {   from: "prices",
                                 localField: "curators.dateHour",
                                 foreignField: "_id",
                                 as: "curator_vote_prices"   }},
                 { $project : { _id: 0, curators: {voter: 1, vests: 1, rshares: 1, curation_weight: 1, dateHour: 1, vote_minutes: 1,
                                           ratio: { $divide: [ "$curators.vests", "$curators.rshares"]},
-                                          edge_case: {$cond: { if: { $and: [ {$eq: [ "$curators.curation_weight", 0]}, {$gt: ["$curators.rshares", 500000000000]}, {$gt: ["$curators.vote_minutes", 0]}  ] }, then: true, else: false }},
+                                          edge_case: {$cond: { if: { $and: [ {$eq: [ "$curators.curation_weight", 0]}, {$gt: ["$curators.rshares", "$xPercsRShares"]}, {$gt: ["$curators.vote_minutes", 0]}  ] }, then: true, else: false }},
                                                   },
                                 "curator_vote_prices": { "$arrayElemAt": [ "$curator_vote_prices", 0 ]} ,
                                  author: 1, permlink: 1, blockNumber: 1}},
@@ -1109,8 +1109,8 @@ function findCuratorMongo(voter, db, openBlock, closeBlock) {
                 { $match : {"curators.edge_case": {$not: {$eq: true}}}},
                 { $unwind : "$curators" },
                 { $group : {_id : {curator : "$curators.voter"},
-                            STU_vote_value: {$sum: "$curators.STU_vote_value"},
                             STU_reward: {$sum: "$curators.STU_reward"},
+                            STU_vote_value: {$sum: "$curators.STU_vote_value"},
                             ratio_average: {$avg: "$curators.ratio"}
                           }},
                 { $match : {STU_vote_value: { $gte: 1}}},
@@ -1131,7 +1131,8 @@ function findCuratorMongo(voter, db, openBlock, closeBlock) {
                     }
                     i+=1;
                 }
-                console.log(winners)
+                console.log(winners);
+                client.close();
             })
             .catch(function(error) {
                 console.log(error);
@@ -1142,11 +1143,34 @@ function findCuratorMongo(voter, db, openBlock, closeBlock) {
         db.collection('comments').aggregate([
                 { $match :  {$and :[
                                 { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
-                                { curators: { $exists : true}}
+                                { operations: 'curator_payout'},
                             ]} },
-                { $project : { author: 1, permlink: 1, blockNumber: 1, curators: {$filter: {input: "$curators", as: "curator", cond: { $and: [{$gt: [ "$$curator.vests", 0 ] }, {$gt: [ "$$curator.rshares", minRshares ]}] }}}}},
+                { $project : { _id: 0, author: 1, permlink: 1, blockNumber: 1, timestamp: 1,
+                                curators: {$filter: {input: "$curators", as: "curator", cond: { $and: [{$gt: [ "$$curator.vests", 0 ] }, {$gt: [ "$$curator.rshares", minRshares ]}]}}}}},
                 { $unwind : "$curators" },
-                { $project : { _id: 0, curators: {voter: 1, vests: 1, rshares: 1, ratio: { $divide: [ "$curators.vests", "$curators.rshares" ]}, SP_reward: { $multiply: [ "$curators.vests", steemPerVests ]}, STU_vote_value: { $divide: [ "$curators.rshares", rsharesToVoteValue ]}}, author: 1, permlink: 1, blockNumber: 1}},
+                { $project : { _id: 0, author: 1, permlink: 1, blockNumber: 1,
+                                curators: { voter: 1, vests: 1, rshares: 1,
+                                            ratio: { $divide: [ "$curators.vests", "$curators.rshares"]},
+                                            dateHour: {$substr: ["$curators.vote_timestamp", 0, 13]},
+                                            vote_minutes: { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, 60000]}
+                                          }, }},
+                { $lookup : {   from: "prices",
+                                localField: "curators.dateHour",
+                                foreignField: "_id",
+                                as: "curator_vote_prices"   }},
+                { $project : { _id: 0, author: 1, permlink: 1, blockNumber: 1,
+                                curators: { voter: 1, vests: 1, rshares: 1,
+                                            ratio: 1, vote_minutes: 1,
+                                          },
+                                "curator_vote_prices": { "$arrayElemAt": [ "$curator_vote_prices", 0 ]} ,
+                                }},
+                { $project : { _id: 0, author: 1, permlink: 1, blockNumber: 1,
+                                curators: { voter: 1, vests: 1, rshares: 1,
+                                            ratio: 1, vote_minutes: 1,
+                                          STU_reward: { $divide: [ "$curators.vests", "$curator_vote_prices.vestsPerSTU" ]},
+                                          STU_vote_value: { $divide: [ "$curators.rshares", "$curator_vote_prices.rsharesPerSTU" ]},
+                                          },
+                                }},
                 { $sort : { "curators.ratio": -1}}
             ]).toArray()
             .then(function(curatorArray) {
@@ -1160,13 +1184,35 @@ function findCuratorMongo(voter, db, openBlock, closeBlock) {
         db.collection('comments').aggregate([
                 { $match :  {$and :[
                                 { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
-                                { curators: { $exists : true}},
+                                { operations: 'curator_payout'},
                                 { "curators.voter": voter},
                             ]} },
-                { $project : { author: 1, permlink: 1, blockNumber: 1, curators: {$filter: {input: "$curators", as: "curator", cond: { $and: [{$gt: [ "$$curator.vests", 0 ] }, {$gt: [ "$$curator.rshares", minRshares ]}] }  }}}},
+                { $project : { author: 1, permlink: 1, blockNumber: 1, timestamp: 1, curators: {$filter: {input: "$curators", as: "curator", cond: { $and: [{$gt: [ "$$curator.vests", 0 ] }, {$gt: [ "$$curator.rshares", minRshares ]}] }  }}}},
                 { $unwind : "$curators" },
-                { $match: {"curators.voter": voter}},
-                { $project : { _id: 0, curators: {voter: 1, vests: 1, rshares: 1, ratio: { $divide: [ "$curators.vests", "$curators.rshares" ]}, SP_reward: { $multiply: [ "$curators.vests", steemPerVests ]}, STU_vote_value: { $divide: [ "$curators.rshares", rsharesToVoteValue ]}}, author: 1, permlink: 1, blockNumber: 1}},
+                { $match:    {"curators.voter": voter}},
+                { $project : { _id: 0, author: 1, permlink: 1, blockNumber: 1,
+                                curators: { voter: 1, vests: 1, rshares: 1,
+                                            ratio: { $divide: [ "$curators.vests", "$curators.rshares"]},
+                                            dateHour: {$substr: ["$curators.vote_timestamp", 0, 13]},
+                                            vote_minutes: { $divide: [ { $subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, 60000]}
+                                          }, }},
+                { $lookup : {   from: "prices",
+                                localField: "curators.dateHour",
+                                foreignField: "_id",
+                                as: "curator_vote_prices"   }},
+                { $project : { _id: 0, author: 1, permlink: 1, blockNumber: 1,
+                                curators: { voter: 1, vests: 1, rshares: 1,
+                                            ratio: 1, vote_minutes: 1,
+                                          },
+                                "curator_vote_prices": { "$arrayElemAt": [ "$curator_vote_prices", 0 ]} ,
+                                }},
+                { $project : { _id: 0, author: 1, permlink: 1, blockNumber: 1,
+                                curators: { voter: 1, vests: 1, rshares: 1,
+                                            ratio: 1, vote_minutes: 1,
+                                          STU_reward: { $divide: [ "$curators.vests", "$curator_vote_prices.vestsPerSTU" ]},
+                                          STU_vote_value: { $divide: [ "$curators.rshares", "$curator_vote_prices.rsharesPerSTU" ]},
+                                          },
+                                }},
                 { $sort : { "curators.ratio": -1}}
             ]).toArray()
             .then(function(curatorArray) {
@@ -1182,7 +1228,7 @@ function findCuratorMongo(voter, db, openBlock, closeBlock) {
         for (let vote of curatorArray) {
             if (i < 10) {
                 vote.curators.ratio = Number((vote.curators.ratio*1000000000).toFixed(3));
-                vote.curators.STU_reward = Number((vote.curators.SP_reward).toFixed(3));
+                vote.curators.STU_reward = Number((vote.curators.STU_reward).toFixed(3));
                 vote.curators.STU_vote_value = Number((vote.curators.STU_vote_value).toFixed(3));
                 console.dir(vote, { depth: null });
             }
