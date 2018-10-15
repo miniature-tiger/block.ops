@@ -660,10 +660,10 @@ async function mongoFillPrices(db, openBlock, closeBlock) {
     await db.collection('comments').aggregate([
         { $match :  {$and:[
                       { operations: 'author_reward'},
-                      { "author_payout.vests": { $gte: 250}},
+                      { "curator_payout.vests": { $gte: 500}},
                       { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
                     ]}},
-        { $project : {_id: 0, payout_timestamp: 1, dateObject: {$dateToParts: {date: "$payout_timestamp"}}, "curator_payout.vests": 1, "author_payout.steem": 1, "author_payout.sbd": 1, "author_payout.vests": 1, rshares: 1, author: 1, permlink: 1, payout_blockNumber: 1 }},
+        { $project : {_id: 0, payout_timestamp: 1, dateObject: {$dateToParts: {date: "$payout_timestamp"}}, "curator_payout.vests": 1, "author_payout.steem": 1, "author_payout.sbd": 1, "author_payout.vests": 1, rshares: 1, author: 1, permlink: 1, payout_blockNumber: 1, blockNumber: 1 }},
         { $match :  {$and:[
                       {"dateObject.minute": { $gte: 20, $lte: 40}},
                       {"curator_payout.vests": { $gt: 0}}
@@ -674,6 +674,7 @@ async function mongoFillPrices(db, openBlock, closeBlock) {
                           author: {$first: "$author"},
                           permlink: {$first: "$permlink"},
                           payout_blockNumber: {$first: "$payout_blockNumber"},
+                          blockNumber: {$first: "$blockNumber"},
                           author_payout_steem: {$first: "$author_payout.steem"},
                           author_payout_sbd: {$first: "$author_payout.sbd"},
                           author_payout_vests: {$first: "$author_payout.vests"},
@@ -681,7 +682,7 @@ async function mongoFillPrices(db, openBlock, closeBlock) {
                           rshares: {$first: "$rshares"},
                   }},
         { $sort: {payout_blockNumber: 1}}
-        ])
+        ], {allowDiskUse: true})
         .toArray()
         .then(function(prices) {
             for (let price of prices) {
@@ -704,13 +705,13 @@ function mongoPrice(db, localRecord, reattempt) {
         .catch(function(error) {
             if(error.code == 11000) {
                 if (reattempt < maxReattempts) {
-                    console.log('E11000 error with <', localRecord.payout_blockNumber, '> mongoPrice. Re-attempting...');
+                    console.log('E11000 error with <', localRecord._id, '> mongoPrice. Re-attempting...');
                     mongoPrice(db, localRecord, 1)
                 } else {
-                    console.log('E11000 error with <', localRecord.payout_blockNumber, '> mongoPrice. Maximum reattempts surpassed.');
+                    console.log('E11000 error with <', localRecord._id, '> mongoPrice. Maximum reattempts surpassed.');
                 }
             } else {
-                console.log('Non-standard error with <', localRecord.payout_blockNumber, '> mongoPrice.');
+                console.log('Non-standard error with <', localRecord._id, '> mongoPrice.');
                 console.log(error);
             }
     });
@@ -726,7 +727,7 @@ async function obtainPricesMongo(db, openBlock, closeBlock) {
 
     return await db.collection('prices').aggregate([
             { $match :    {payout_blockNumber: { $gte: openBlock, $lt: closeBlock }}},
-            { $project :  {_id: 1, vestsPerSTU: 1, rsharesPerSTU: 1, steemPerSTU: 1}},
+            { $project :  {_id: 1, vestsPerSTU: 1, rsharesPerSTU: 1, steemPerSTU: 1, STUPerVests: 1, STUPerRshares: 1, STUPerSteem: 1,}},
             { $sort: {_id: 1 }},
         ])
         .toArray();
@@ -776,19 +777,151 @@ module.exports.reportCommentsMongoOld = reportCommentsMongoOld;
 
 // Market share reports on Steem applications
 // ------------------------------------------
-// Note that payments are in relation to comments made in the date range - not payments made within the date range
-async function reportCommentsMongo(db, openBlock, closeBlock) {
+// In "reportCommentsCreatedMongo" payments are in relation to comments created in the date range - not payments made within the date range
+// This will require loading prices (and thus data) for 7 days after the date range
+async function reportCommentsMongo(db, openBlock, closeBlock, appChoice, createdPayout, depthInd, aggregation) {
+
+    let appDescription = { application: appChoice };
+    if (appChoice == undefined) {
+        appDescription = {}
+    }
+    console.log(appDescription)
+
+    let blockSelection = { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }};
+    if (createdPayout == 'created') {
+        blockSelection = { blockNumber: { $gte: openBlock, $lt: closeBlock }};
+    }
+    console.log(blockSelection)
+
+    let depthChoice = {};
+    if (depthInd == 'posts') {
+        depthChoice = { postComment: 0 };
+    } else if (depthInd == 'comments') {
+        depthChoice = { postComment: 1 };
+    }
+
+
+    let group1 = { application : "$application", author: "$author" };
+    let group2 = { application : "$_id.application" };
+    let sortDef = { authors: -1 }
+    if ( aggregation == 'allByDate' ) {
+        group1 = { dateDay: "$dateDay", author: "$author" };
+        group2 = { dateDay: "$_id.dateDay" };
+        sortDef = { "_id.dateDay": 1 }
+    } else if ( aggregation == 'appByDate' ) {
+        group1 = { application : "$application", dateDay: "$dateDay", author: "$author" };
+        group2 = { application : "$_id.application", dateDay: "$_id.dateDay" };
+        sortDef = { dateDay: 1 }
+    }
+
     return db.collection('comments').aggregate([
-            { $match :  {$and :[{operations: 'comment'},
-                        {blockNumber: { $gte: openBlock, $lt: closeBlock }}]} },
-            { $project : {_id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1}},
+            { $match :  { $and :[
+                            blockSelection,
+                            depthChoice,
+                            { operations: 'comment' },
+                            { transactionType: { $ne: 'commentEdit' }},
+                            appDescription
+                        ]}},
+            { $project : {_id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1,
+                            payout_timestamp: 1, dateHour: {$substr: ["$payout_timestamp", 0, 13]}, dateDay: {$substr: ["$timestamp", 0, 10]}}},
+            { $lookup : {   from: "prices",
+                            localField: "dateHour",
+                            foreignField: "_id",
+                            as: "payout_prices"   }},
+            { $project : {  _id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1,
+                            payout_timestamp: 1, dateHour: 1, dateDay: 1, "payout_prices": { "$arrayElemAt": [ "$payout_prices", 0 ]},
+                         }},
+            { $project : { _id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1, payout_prices: 1, payout_timestamp: 1, dateHour: 1, dateDay: 1,
+                                  author_payout_STU: { sbd: "$author_payout.sbd", steem: { $multiply: [ "$author_payout.steem", "$payout_prices.STUPerSteem" ]}, vests: { $divide: [ "$author_payout.vests", "$payout_prices.vestsPerSTU" ]}},
+                                  benefactor_payout_STU: { sbd: "$benefactor_payout.sbd", steem: { $multiply: [ "$benefactor_payout.steem", "$payout_prices.STUPerSteem" ]}, vests: { $divide: [ "$benefactor_payout.vests", "$payout_prices.vestsPerSTU" ]}},
+                                  curator_payout_STU: { vests: { $divide: [ "$curator_payout.vests", "$payout_prices.vestsPerSTU" ]}},
+                          }},
+            { $group :  {_id : group1,
+                        posts: { $sum: 1 },
+                        author_payout_sbd: {$sum: "$author_payout.sbd"},
+                        author_payout_steem: {$sum: "$author_payout.steem"},
+                        author_payout_vests: {$sum: "$author_payout.vests"},
+                        benefactor_payout_sbd: {$sum: "$benefactor_payout.sbd"},
+                        benefactor_payout_steem: {$sum: "$benefactor_payout.steem"},
+                        benefactor_payout_vests: {$sum: "$benefactor_payout.vests"},
+                        curator_payout_vests: {$sum: "$curator_payout.vests"},
+                        author_payout_sbd_STU: {$sum: "$author_payout_STU.sbd"},
+                        author_payout_steem_STU: {$sum: "$author_payout_STU.steem"},
+                        author_payout_vests_STU: {$sum: "$author_payout_STU.vests"},
+                        benefactor_payout_sbd_STU: {$sum: "$benefactor_payout_STU.sbd"},
+                        benefactor_payout_steem_STU: {$sum: "$benefactor_payout_STU.steem"},
+                        benefactor_payout_vests_STU: {$sum: "$benefactor_payout_STU.vests"},
+                        curator_payout_vests_STU: {$sum: "$curator_payout_STU.vests"},
+                        }},
+            { $group :  {_id : group2,
+                        authors: {$sum: 1},
+                        posts: {$sum: "$posts"},
+                        author_payout_sbd: {$sum: "$author_payout_sbd"},
+                        author_payout_steem: {$sum: "$author_payout_steem"},
+                        author_payout_vests: {$sum: "$author_payout_vests"},
+                        benefactor_payout_sbd: {$sum: "$benefactor_payout_sbd"},
+                        benefactor_payout_steem: {$sum: "$benefactor_payout_steem"},
+                        benefactor_payout_vests: {$sum: "$benefactor_payout_vests"},
+                        curator_payout_vests: {$sum: "$curator_payout_vests"},
+                        author_payout_sbd_STU: {$sum: "$author_payout_sbd_STU"},
+                        author_payout_steem_STU: {$sum: "$author_payout_steem_STU"},
+                        author_payout_vests_STU: {$sum: "$author_payout_vests_STU"},
+                        benefactor_payout_sbd_STU: {$sum: "$benefactor_payout_sbd_STU"},
+                        benefactor_payout_steem_STU: {$sum: "$benefactor_payout_steem_STU"},
+                        benefactor_payout_vests_STU: {$sum: "$benefactor_payout_vests_STU"},
+                        curator_payout_vests_STU: {$sum: "$curator_payout_vests_STU"},
+                      }},
+            { $sort : sortDef}
+        ], {allowDiskUse: true})
+        .toArray().catch(function(error) {
+            console.log(error);
+        });
+}
+
+module.exports.reportCommentsMongo = reportCommentsMongo;
+
+
+
+// Market share reports on Steem applications
+// ------------------------------------------
+// In "reportCommentsPayoutMongo" payments are those made within the date range
+// This will require loading data 7 days before the date range to have the "application/version" detail of posts in that range
+async function reportCommentsPayoutMongo(db, openBlock, closeBlock) {
+    return db.collection('comments').aggregate([
+            { $match :  { $and :[
+                            { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                            { operations: 'comment' },
+                            { transactionType: { $ne: 'commentEdit' }},
+                        ]}},
+            { $project : {_id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1, payout_timestamp: 1, dateHour: {$substr: ["$payout_timestamp", 0, 13]}}},
+            { $lookup : {   from: "prices",
+                            localField: "dateHour",
+                            foreignField: "_id",
+                            as: "payout_prices"   }},
+            { $project : {  _id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1,
+                            payout_timestamp: 1, dateHour: 1, "payout_prices": { "$arrayElemAt": [ "$payout_prices", 0 ]},
+                         }},
+            { $project : { _id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1, payout_prices: 1, payout_timestamp: 1, dateHour: 1,
+                                  author_payout_STU: { sbd: "$author_payout.sbd", steem: { $multiply: [ "$author_payout.steem", "$payout_prices.STUPerSteem" ]}, vests: { $divide: [ "$author_payout.vests", "$payout_prices.vestsPerSTU" ]}},
+                                  benefactor_payout_STU: { sbd: "$benefactor_payout.sbd", steem: { $multiply: [ "$benefactor_payout.steem", "$payout_prices.STUPerSteem" ]}, vests: { $divide: [ "$benefactor_payout.vests", "$payout_prices.vestsPerSTU" ]}},
+                                  curator_payout_STU: { vests: { $divide: [ "$curator_payout.vests", "$payout_prices.vestsPerSTU" ]}},
+                          }},
             { $group : {_id : {application : "$application", author: "$author"},
                         posts: { $sum: 1 },
                         author_payout_sbd: {$sum: "$author_payout.sbd"},
                         author_payout_steem: {$sum: "$author_payout.steem"},
                         author_payout_vests: {$sum: "$author_payout.vests"},
+                        benefactor_payout_sbd: {$sum: "$benefactor_payout.sbd"},
+                        benefactor_payout_steem: {$sum: "$benefactor_payout.steem"},
                         benefactor_payout_vests: {$sum: "$benefactor_payout.vests"},
                         curator_payout_vests: {$sum: "$curator_payout.vests"},
+                        author_payout_sbd_STU: {$sum: "$author_payout_STU.sbd"},
+                        author_payout_steem_STU: {$sum: "$author_payout_STU.steem"},
+                        author_payout_vests_STU: {$sum: "$author_payout_STU.vests"},
+                        benefactor_payout_sbd_STU: {$sum: "$benefactor_payout_STU.sbd"},
+                        benefactor_payout_steem_STU: {$sum: "$benefactor_payout_STU.steem"},
+                        benefactor_payout_vests_STU: {$sum: "$benefactor_payout_STU.vests"},
+                        curator_payout_vests_STU: {$sum: "$curator_payout_STU.vests"},
                         }},
             { $group : {_id : {application : "$_id.application"},
                         authors: {$sum: 1},
@@ -796,16 +929,25 @@ async function reportCommentsMongo(db, openBlock, closeBlock) {
                         author_payout_sbd: {$sum: "$author_payout_sbd"},
                         author_payout_steem: {$sum: "$author_payout_steem"},
                         author_payout_vests: {$sum: "$author_payout_vests"},
+                        benefactor_payout_sbd: {$sum: "$benefactor_payout_sbd"},
+                        benefactor_payout_steem: {$sum: "$benefactor_payout_steem"},
                         benefactor_payout_vests: {$sum: "$benefactor_payout_vests"},
-                        curator_payout_vests: {$sum: "$curator_payout_vests"}
-                        }},
+                        curator_payout_vests: {$sum: "$curator_payout_vests"},
+                        author_payout_sbd_STU: {$sum: "$author_payout_sbd_STU"},
+                        author_payout_steem_STU: {$sum: "$author_payout_steem_STU"},
+                        author_payout_vests_STU: {$sum: "$author_payout_vests_STU"},
+                        benefactor_payout_sbd_STU: {$sum: "$benefactor_payout_STU.sbd"},
+                        benefactor_payout_steem_STU: {$sum: "$benefactor_payout_STU.steem"},
+                        benefactor_payout_vests_STU: {$sum: "$benefactor_payout_STU.vests"},
+                        curator_payout_vests_STU: {$sum: "$curator_payout_vests_STU"},
+                                    }},
             { $sort : {authors:-1}}
         ]).toArray().catch(function(error) {
             console.log(error);
         });
 }
 
-module.exports.reportCommentsMongo = reportCommentsMongo;
+module.exports.reportCommentsPayoutMongo = reportCommentsPayoutMongo;
 
 
 

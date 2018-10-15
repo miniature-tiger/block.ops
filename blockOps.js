@@ -562,7 +562,7 @@ async function fillPrices() {
     // Check prices index exists
     let checkCp = await mongoblock.checkCollectionExists(db, 'prices');
     if (checkCp == false) {
-        db.collection('prices').createIndex({payout_blockNumber: 1}, {unique:true});
+        //db.collection('prices').createIndex({payout_blockNumber: 1}, {unique:true});
     }
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
@@ -642,17 +642,22 @@ async function fillPrices() {
                                 comment.beneficiaries_payout_value = Number((comment.total_payout_value - comment.author_payout_value - comment.curator_payout_value).toFixed(3));
                             }
                             comment.vestsPerSTU = Number((comment.curator_payout_vests / comment.curator_payout_value).toFixed(3));
+                            comment.STUPerVests = Number((comment.curator_payout_value / comment.curator_payout_vests).toPrecision(8));
                             comment.steemPerSTU = 0;
+                            comment.STUPerSteem = 0;
                             if (comment.author_payout_steem > 0) {
                                 comment.steemPerSTU = Number((comment.author_payout_steem / (comment.author_payout_value - comment.author_payout_sbd - (comment.author_payout_vests/comment.vestsPerSTU))).toFixed(3));
+                                comment.STUPerSteem = Number(((comment.author_payout_value - comment.author_payout_sbd - (comment.author_payout_vests/comment.vestsPerSTU)) / (comment.author_payout_steem)).toPrecision(8));
                             }
 
                             if (comment.payout_blockNumber < HF20) {
                                 console.log('HF19')
                                 comment.rsharesPerSTU = Number((comment.rshares / comment.total_payout_value).toFixed(3));
+                                comment.STUPerRshares = Number((comment.total_payout_value / comment.rshares).toPrecision(8));
                             } else {
                                 console.log('HF20')
                                 comment.rsharesPerSTU = Number(((comment.rshares * 0.75) / (comment.author_payout_value + comment.beneficiaries_payout_value)).toFixed(3));
+                                comment.STUPerRshares = Number(((comment.author_payout_value + comment.beneficiaries_payout_value)/ (comment.rshares * 0.75)).toPrecision(8));
                             }
                             await mongoblock.mongoPrice(db, comment, 0);
 
@@ -664,7 +669,7 @@ async function fillPrices() {
 
         let updatedPrices = await db.collection('prices')
             .find({payout_blockNumber: { $gte: openBlock, $lt: closeBlock }})
-            .project({_id: 1, vestsPerSTU: 1, steemPerSTU: 1, rsharesPerSTU:1 })
+            .project({_id: 1, vestsPerSTU: 1, steemPerSTU: 1, rsharesPerSTU:1, STUPerVests: 1, STUPerRshares: 1, STUPerSteem: 1})
             .toArray();
 
         for (var j = 0; j < updatedPrices.length-1; j+=1) {
@@ -681,8 +686,12 @@ async function fillPrices() {
                             basis: 'interpolated',
                             vestsPerSTU: (updatedPrices[j].vestsPerSTU + (k * (updatedPrices[j+1].vestsPerSTU - updatedPrices[j].vestsPerSTU) / gapsNumber)),
                             steemPerSTU: (updatedPrices[j].steemPerSTU + (k * (updatedPrices[j+1].steemPerSTU - updatedPrices[j].steemPerSTU) / gapsNumber)),
-                            rsharesPerSTU: (updatedPrices[j].rsharesPerSTU + (k * (updatedPrices[j+1].rsharesPerSTU - updatedPrices[j].rsharesPerSTU) / gapsNumber))
+                            rsharesPerSTU: (updatedPrices[j].rsharesPerSTU + (k * (updatedPrices[j+1].rsharesPerSTU - updatedPrices[j].rsharesPerSTU) / gapsNumber)),
+                            STUPerVests: (updatedPrices[j].STUPerVests + (k * (updatedPrices[j+1].STUPerVests - updatedPrices[j].STUPerVests) / gapsNumber)),
+                            STUPerSteem: (updatedPrices[j].STUPerSteem + (k * (updatedPrices[j+1].STUPerSteem - updatedPrices[j].STUPerSteem) / gapsNumber)),
+                            STUPerRshares: (updatedPrices[j].STUPerRshares + (k * (updatedPrices[j+1].STUPerRshares - updatedPrices[j].STUPerRshares) / gapsNumber)),
                         }
+                        console.log(interpolate)
                     // update to prices
                     await mongoblock.mongoPrice(db, interpolate, 0);
                 }
@@ -713,7 +722,7 @@ async function displayPrices() {
         for (let price of displayPrices) {
             console.log(price)
         }
-        const fieldNames = ['_id', 'vestsPerSTU', 'steemPerSTU', 'rsharesPerSTU'];
+        const fieldNames = ['_id', 'vestsPerSTU', 'steemPerSTU', 'rsharesPerSTU', 'STUPerVests', 'STUPerSteem', 'STUPerRshares'];
         postprocessing.dataExport(displayPrices.slice(0), 'prices_export', fieldNames);
 
         console.log('closing mongo db');
@@ -768,13 +777,29 @@ async function reportComments() {
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
 
     if (parameterIssue == false) {
-        let marketShareSummary = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock);
-        let exportData = postprocessing.marketShareProcessing(marketShareSummary);
-        const fieldNames = ['application', 'authors', 'authorsRank', 'posts', 'postsRank', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_vests', 'curator_payout_vests'];
-        //postprocessing.dataExport(exportData.slice(0), 'marketShareTest', fieldNames);
+        let marketShareCreatedSummary = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock, parameter3, 'created', 'all', 'default');
+        let marketSharePayoutSummary = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock, parameter3, 'payout', 'all', 'default');
+        let exportData = postprocessing.marketShareProcessing(marketShareCreatedSummary, marketSharePayoutSummary);
+        let fieldNames = ['application', 'authors', 'authorsRank', 'posts', 'postsRank', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_sbd', 'benefactor_payout_steem', 'benefactor_payout_vests', 'curator_payout_vests', 'author_payout_sbd_STU', 'author_payout_steem_STU', 'author_payout_vests_STU', 'benefactor_payout_sbd_STU', 'benefactor_payout_steem_STU', 'benefactor_payout_vests_STU', 'curator_payout_vests_STU'];
+        postprocessing.dataExport(exportData.slice(0), 'marketShareTest', fieldNames);
+
+        let productionStatsPerDayData = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock, parameter3, 'created', 'all', 'allByDate');
+        let exportData2 = postprocessing.productionStatsByDayProcessing(productionStatsPerDayData);
+        //console.log( exportData2 )
+        fieldNames = ['date', 'authors', 'posts', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_sbd', 'benefactor_payout_steem', 'benefactor_payout_vests', 'curator_payout_vests', 'author_payout_sbd_STU', 'author_payout_steem_STU', 'author_payout_vests_STU', 'benefactor_payout_sbd_STU', 'benefactor_payout_steem_STU', 'benefactor_payout_vests_STU', 'curator_payout_vests_STU'];
+        postprocessing.dataExport(exportData2.slice(0), 'productionStatsByDay', fieldNames);
+
+        let postsStatsPerDayData = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock, parameter3, 'created', 'posts', 'allByDate');
+        let exportData3 = postprocessing.productionStatsByDayProcessing(postsStatsPerDayData);
+        //console.log( exportData3 )
+        fieldNames = ['date', 'authors', 'posts', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_sbd', 'benefactor_payout_steem', 'benefactor_payout_vests', 'curator_payout_vests', 'author_payout_sbd_STU', 'author_payout_steem_STU', 'author_payout_vests_STU', 'benefactor_payout_sbd_STU', 'benefactor_payout_steem_STU', 'benefactor_payout_vests_STU', 'curator_payout_vests_STU'];
+        postprocessing.dataExport(exportData3.slice(0), 'postsStatsByDay', fieldNames);
+
         console.log('');
         console.log('closing mongo db');
         console.log('------------------------------------------------------------------------');
+        let runTime = Date.now() - launchTime;
+        console.log('End time: ' + runTime);
         console.log('------------------------------------------------------------------------');
         client.close();
     } else {
