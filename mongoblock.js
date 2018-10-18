@@ -483,7 +483,7 @@ module.exports.mongoBlockProcessed = mongoBlockProcessed;
 // -------------------------------------------------------------------
 function mongoOperationProcessed(db, localBlockNumber, operationLog, operationsIncluded, reattempt) {
     let maxReattempts = 1;
-    db.collection('blocksProcessed').findOneAndUpdate({ blockNumber: localBlockNumber}, {$addToSet: {operations: operationLog}, $inc: {operationsProcessed: operationsIncluded}}, {upsert: true, returnOriginal: false, maxTimeMS: 1000})
+    db.collection('blocksProcessed').findOneAndUpdate({ blockNumber: localBlockNumber}, {$addToSet: {operations: operationLog}, $inc: {operationsProcessed: operationsIncluded}}, {upsert: true, returnOriginal: false, maxTimeMS: 10000})
         .then(function(response) {
             if (response.value == null) {
                 console.log('------------------------');
@@ -523,7 +523,7 @@ module.exports.mongoOperationProcessed = mongoOperationProcessed;
 // Update blocksProcessed with details for a set of active_votes (which is not a block operation so requires separate treatmenet)
 // ----------------------------------------------------------------------------------------------------------------------------
 async function mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, activeVoteSetIncluded, startEnd, reattempt) {
-    let maxReattempts = 1;
+    let maxReattempts = 10;
 
     // Function carries out updates at the start and the end of each set of active_votes
     if (startEnd == 'start') {
@@ -536,10 +536,10 @@ async function mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, 
                         .catch(function(error) {
                             if(error.code == 11000) {
                                 if (reattempt < maxReattempts) {
-                                    //console.log('E11000 error with <', localActiveBlockNumber, '> mongoActiveProcessed. Re-attempting...');
-                                    mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, activeVoteSetIncluded, startEnd, 1) ;
+                                    //console.log('E11000 error with <', localActiveBlockNumber, localActiveLog.associatedOp, reattempt, '> mongoActiveProcessed start. Re-attempting...');
+                                    mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, activeVoteSetIncluded, startEnd, reattempt + 1);
                                 } else {
-                                    console.log('E11000 error with <', localActiveBlockNumber, '> mongoActiveProcessed. Maximum reattempts surpassed.');
+                                    console.log('E11000 error with <', localActiveBlockNumber, localActiveLog.associatedOp, reattempt, '> mongoActiveProcessed start. Maximum reattempts surpassed.');
                                 }
                             } else {
                                 console.log('Non-standard error with <', localActiveBlockNumber, '> mongoActiveProcessed.');
@@ -562,14 +562,14 @@ async function mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, 
         db.collection('blocksProcessed').findOneAndUpdate(  { blockNumber: localActiveBlockNumber, operations: { $elemMatch: { associatedOp: localActiveLog.associatedOp}}},
                                                             { $set: {"operations.$.status": localActiveLog.status, "operations.$.activeVotesProcessed": localActiveLog.activeVotesProcessed},
                                                               $inc: {activeVoteSetProcessed: activeVoteSetIncluded}},
-                                                            { upsert: false, returnOriginal: false, maxTimeMS: 1000})
+                                                            { upsert: false, returnOriginal: false, maxTimeMS: 2000})
             .then(function(response) {
                 if (response.value == null) {
                     if (reattempt < maxReattempts) {
-                        console.log('null response from mongoActiveProcessed <', localActiveBlockNumber, '>. Re-attempting...')
-                        mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, activeVoteSetIncluded, startEnd, 1) ;
+                        //console.log('null response from mongoActiveProcessed <', localActiveBlockNumber, localActiveLog.associatedOp, localActiveLog.status, reattempt, '>. End. Re-attempting...')
+                        mongoActiveProcessed(db, localActiveBlockNumber, localActiveLog, activeVoteSetIncluded, startEnd, reattempt + 1) ;
                     } else {
-                        console.log('null response from mongoActiveProcessed <', localActiveBlockNumber, '>. Maximum reattempts surpassed. Error logged.');
+                        console.log('null response from mongoActiveProcessed <', localActiveBlockNumber, localActiveLog.associatedOp, reattempt, '>. End. Maximum reattempts surpassed. Error logged.');
                         let errorRecord = {blockNumber: localActiveBlockNumber, status: 'error'};
                         mongoErrorLog(db, errorRecord, 0);
                     }
@@ -1255,7 +1255,7 @@ function findCuratorMongo(voter, db, openBlock, closeBlock) {
                             STU_vote_value: {$sum: "$curators.STU_vote_value"},
                             ratio_average: {$avg: "$curators.ratio"}
                           }},
-                { $match : {STU_vote_value: { $gte: 1}}},
+                { $match : {STU_vote_value: { $gte: 0.5}}},
                 { $sort : { "ratio_average": -1}}
             ], {allowDiskUse: true})
             .toArray()

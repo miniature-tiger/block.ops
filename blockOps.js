@@ -12,6 +12,8 @@ console.log('-------------------------------------------------------------------
 // Imports
 // -------
 const mongodb = require('mongodb');
+const fsPromises = require('fs').promises;
+const path = require('path');
 const steemrequest = require('./steemrequest/steemrequest.js')
 const mongoblock = require('./mongoblock.js')
 const helperblock = require('./helperblock.js')
@@ -46,6 +48,8 @@ if (commandLine == 'setup') {
     checkAllBlockDates();
 } else if (commandLine == 'filloperations') {
     fillOperations();
+} else if (commandLine == 'patchoperations') {
+    patchVirtualOperations();
 } else if (commandLine == 'fillprices') {
     fillPrices();
 } else if (commandLine == 'displayprices') {
@@ -390,7 +394,7 @@ async function fillOperations() {
                             mongoblock.processVote(operation, operationNumber, mongoblock.mongoVote, db);
                         } else if (operation.op[0] == 'author_reward') {
                             mongoblock.validateComments(db, operation);
-                            activeVotes(operation);
+                            activeVotes(operation, db);
                             mongoblock.processAuthorReward(operation, mongoblock.mongoAuthorReward, db);
                         } else if (operation.op[0] == 'comment_benefactor_reward') {
                             mongoblock.processBenefactorReward(operation, mongoblock.mongoBenefactorReward, db);
@@ -442,53 +446,6 @@ async function fillOperations() {
         }
     }
 
-    async function activeVotes(localOperation) {
-        await steemrequest.getActiveVotes(localOperation.op[1].author, localOperation.op[1].permlink)
-            .then(async function(votesReturned) {
-                let votesList = JSON.parse(votesReturned);
-
-                // Setting up check controls for each active votes run
-                let activeProcessedCount = 0
-                let activeVotesRunIsComplete = 0;
-                let logStatus = 'Processing';
-                let logActive = { associatedOp: localOperation.virtual_op, transactionType: 'active_vote', count: 0, status: logStatus, activeVotesCount: votesList.result.length }
-                mongoblock.mongoActiveProcessed(db, localOperation.block, logActive, 0, 'start', 0);
-
-                // Loop to process list of active votes - now only updated in Mongo once the full run is complete
-                for (let vote of votesList.result) {
-                    let activeData = await mongoblock.processActiveVote(vote, localOperation.op[1].author, localOperation.op[1].permlink, localOperation.block, localOperation.virtual_op, mongoblock.mongoActiveVote, db);
-                    let dataInsertCheck = await mongoblock.mongoActiveVote(db, localOperation.block, localOperation.virtual_op, activeData, 0);
-                    if (dataInsertCheck == 'skipped' || dataInsertCheck.ok == 1) {
-                        activeProcessedCount += 1;
-                    } else {
-                        // Issue with active Vote processing - block will be marked as error due to short count
-                        console.log('Issue with active Vote processing: block', localOperation.block)
-                    }
-                }
-                // active_vote set completes successfully
-                if (activeProcessedCount == votesList.result.length) {
-                    logStatus = 'OK';
-                    logActive = { associatedOp: localOperation.virtual_op, transactionType: 'active_vote', status: 'OK', activeVotesProcessed: activeProcessedCount }
-                    activeVotesRunIsComplete = 1;
-                } else {
-                    // Failure in active_vote processing - logged as error
-                    console.log('Failure in active upvote processing - reported as error')
-                    logStatus = 'Error';
-                    logActive = { associatedOp: localOperation.virtual_op, transactionType: 'active_vote', status: 'Error', activeVotesProcessed: activeProcessedCount }
-                    let errorRecord = {blockNumber: localOperation.block, status: 'error'};
-                    mongoblock.mongoErrorLog(db, errorRecord, 0);
-                }
-                // Block document in Mongo updated with status of active vote run set
-                mongoblock.mongoActiveProcessed(db, localOperation.block, logActive, activeVotesRunIsComplete, 'end', 0);
-            })
-            .catch(function(error) {
-                console.log('Error in ', localOperation.block, localOperation.op[1].author, localOperation.op[1].permlink, 'active votes. Error logged.');
-                let errorRecord = {blockNumber: localOperation.block, status: 'error'};
-                mongoblock.mongoErrorLog(db, errorRecord, 0);
-                console.log(error)
-            })
-    }
-
     function completeOperationsLoop() {
         let runTime = Date.now() - launchTime;
         console.log('unknownOperations: ', unknownOperations);
@@ -506,6 +463,215 @@ async function fillOperations() {
 
 // Closing fillOperations
 }
+
+
+// Separated outside of main space
+async function activeVotes(localOperation, db) {
+    await steemrequest.getActiveVotes(localOperation.op[1].author, localOperation.op[1].permlink)
+        .then(async function(votesReturned) {
+            let votesList = JSON.parse(votesReturned);
+
+            // Setting up check controls for each active votes run
+            let activeProcessedCount = 0
+            let activeVotesRunIsComplete = 0;
+            let logStatus = 'Processing';
+            let logActive = { associatedOp: localOperation.virtual_op, transactionType: 'active_vote', count: 0, status: logStatus, activeVotesCount: votesList.result.length }
+            mongoblock.mongoActiveProcessed(db, localOperation.block, logActive, 0, 'start', 0);
+
+            // Loop to process list of active votes - now only updated in Mongo once the full run is complete
+            for (let vote of votesList.result) {
+                let activeData = await mongoblock.processActiveVote(vote, localOperation.op[1].author, localOperation.op[1].permlink, localOperation.block, localOperation.virtual_op, mongoblock.mongoActiveVote, db);
+                let dataInsertCheck = await mongoblock.mongoActiveVote(db, localOperation.block, localOperation.virtual_op, activeData, 0);
+                if (dataInsertCheck == 'skipped' || dataInsertCheck.ok == 1) {
+                    activeProcessedCount += 1;
+                } else {
+                    // Issue with active Vote processing - block will be marked as error due to short count
+                    console.log('Issue with active Vote processing: block', localOperation.block)
+                }
+            }
+            // active_vote set completes successfully
+            if (activeProcessedCount == votesList.result.length) {
+                logStatus = 'OK';
+                logActive = { associatedOp: localOperation.virtual_op, transactionType: 'active_vote', status: 'OK', activeVotesProcessed: activeProcessedCount }
+                activeVotesRunIsComplete = 1;
+            } else {
+                // Failure in active_vote processing - logged as error
+                console.log('Failure in active upvote processing - reported as error')
+                logStatus = 'Error';
+                logActive = { associatedOp: localOperation.virtual_op, transactionType: 'active_vote', status: 'Error', activeVotesProcessed: activeProcessedCount }
+                let errorRecord = {blockNumber: localOperation.block, status: 'error'};
+                mongoblock.mongoErrorLog(db, errorRecord, 0);
+            }
+            // Block document in Mongo updated with status of active vote run set
+            mongoblock.mongoActiveProcessed(db, localOperation.block, logActive, activeVotesRunIsComplete, 'end', 0);
+        })
+        .catch(function(error) {
+            console.log('Error in ', localOperation.block, localOperation.op[1].author, localOperation.op[1].permlink, 'active votes. Error logged.');
+            let errorRecord = {blockNumber: localOperation.block, status: 'error'};
+            mongoblock.mongoErrorLog(db, errorRecord, 0);
+            console.log(error)
+        })
+}
+
+
+// Patch virtual operations
+// --------------------------------------------------------
+// After a halt of the blockchain there can be a very large number of virtual operations associated with one block
+// This patch can be applied where these virtual operations cannot be obtained due to steemit.api server timeout
+async function patchVirtualOperations() {
+
+    let opsNotHandled = 0;
+    let preProcessed = 0;
+    let preActiveProcessed = 0;
+    let count = 0;
+    let lastCall = Date.now();
+    let lastMongo = Date.now();
+
+    // Connect to Mongo
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    // Function to load json file of operations into memory
+    function jsonFile(folderName, fileName) {
+        console.log(path.join(__dirname, folderName, fileName))
+        return fsPromises.readFile(path.join(__dirname, folderName, fileName), 'utf8')
+            .catch(function(error) {
+                console.log(error);
+            });
+    }
+
+    //Reset operations counter in blocksProcessed for blocks being rerun
+    db.collection('blocksProcessed')
+        .updateMany({ blockNumber: 26038153, status: {$ne: 'OK'}},
+                {$set: {operationsProcessed: 0, activeVoteSetProcessed: 0}, $pull: { operations: {transactionType: "notHandled"}}}, {upsert: false})
+        .catch(function(error) {
+            console.log(error);
+        });
+
+    // Call function to read json file into memory, parse, and annotate with default statuses
+    let lostArray = await jsonFile('lostBlocks', '26038153.json');
+    console.log('Array loaded.', ((Date.now() - launchTime)/1000/60).toFixed(2));
+    lostArray = JSON.parse(lostArray);
+    for (let entry of lostArray) {
+        entry.opStatus = 'unprocessed';
+        if (entry.op[0] == 'author_reward') {
+            entry.associatedStatus = 'unprocessed';
+        }
+    }
+    console.log('Array parsed and annotated.', ((Date.now() - launchTime)/1000/60).toFixed(2));
+
+    // Start of processing loop - add blockrecord (operations processed log) to blocksProcessed
+    let timestamp = new Date('2018-09-17T19:56:51.000Z');
+    let blockRecord = {blockNumber: 26038153, timestamp: timestamp, status: 'Processing', operationsCount: lostArray.length, activeVoteSetCount: 6759, activeVoteSetProcessed: 0};
+    mongoblock.mongoBlockProcessed(db, blockRecord, 0);
+
+    // Update statuses in lostArray based on any previous runs
+    await db.collection('blocksProcessed')
+        .aggregate([
+            { $match : {blockNumber: 26038153}},
+            { $project : {_id: 0, operations: 1 }},
+            { $unwind : "$operations"},
+        ])
+        .toArray()
+        .then(async function(records) {
+            console.log('Aggregation finished.', ((Date.now() - launchTime)/1000/60).toFixed(2));
+            for (let record of records) {
+                if (record.operations.hasOwnProperty('virtualOp')) {
+                    let arrayPosition = lostArray.findIndex(fI => fI.virtual_op == record.operations.virtualOp);
+                    lostArray[arrayPosition].opStatus = record.operations.status;
+                } else if (record.operations.hasOwnProperty('associatedOp')) {
+                    let arrayPosition = lostArray.findIndex(fI => fI.virtual_op == record.operations.associatedOp);
+                    lostArray[arrayPosition].associatedStatus = record.operations.status;
+                } else {
+                    console.log('neither virtualop nor associatedop');
+                }
+            }
+            patchRunner();
+    });
+
+    // Main processor - takes each lostArray operation and processes using existing functions
+    // Timeouts used to regulate calls to API (otherwise loop can make many calls very quickly)
+    async function patchRunner() {
+        if (count == lostArray.length) {
+            finishUp();
+        } else {
+
+            if (count % 100 == 0) {
+                console.log(count + ' records of ' + lostArray.length + ' processed.', ((Date.now() - launchTime)/1000/60).toFixed(2));
+            }
+            let operation = lostArray[count];
+
+            if (operation.op[0] == 'author_reward') {
+                if (operation.opStatus != 'OK') {
+                    console.log('getting comment', operation.op[1].author, operation.op[1].permlink);
+                    lastCall = Date.now();
+                    await steemrequest.getComment(operation.op[1].author, operation.op[1].permlink)
+                            .then(async function(body) {
+                                result = JSON.parse(body).result;
+                                let forwardDate = new Date(result.created + '.000Z');
+                                forwardDate.setUTCDate(forwardDate.getUTCDate()+7);
+                                operation.timestamp = forwardDate.toISOString().slice(0, 19);
+                                mongoblock.validateComments(db, operation);
+                                mongoblock.processAuthorReward(operation, mongoblock.mongoAuthorReward, db);
+                                lastMongo = Date.now();
+                          });
+                } else {
+                    preProcessed += 1;
+                }
+                if (operation.associatedStatus != 'OK') {
+                    activeVotes(operation, db);
+                    lastCall = Date.now();
+                    lastMongo = Date.now();
+                } else {
+                    preActiveProcessed += 1;
+                }
+                count += 1;
+                setTimeout(patchRunner, Math.max(100 - (Date.now() - lastCall), 50 - (Date.now() - lastMongo), 0));
+
+            } else if (operation.op[0] == 'curation_reward') {
+                if (operation.opStatus != 'OK') {
+                    mongoblock.processCuratorReward(operation, mongoblock.mongoCuratorReward, db);
+                    lastMongo = Date.now();
+                } else {
+                    preProcessed += 1;
+                }
+                count += 1;
+                setTimeout(patchRunner, Math.max(200 - (Date.now() - lastMongo), 0));
+
+            } else if (operation.op[0] == 'comment_benefactor_reward') {
+                if (operation.opStatus != 'OK') {
+                    mongoblock.processBenefactorReward(operation, mongoblock.mongoBenefactorReward, db);
+                    lastMongo = Date.now();
+                } else {
+                    preProcessed += 1;
+                }
+                count += 1;
+                setTimeout(patchRunner, Math.max(100 - (Date.now() - lastMongo), 0));
+            } else {
+                opsNotHandled += 1;
+                patchRunner();
+            }
+        }
+    }
+
+    // Adding numbers of blocks preprocessed or not handled and checking complete
+    function finishUp() {
+        db.collection('blocksProcessed').findOneAndUpdate(  { blockNumber: 26038153},
+                                                            { $inc: {activeVoteSetProcessed: preActiveProcessed}},
+                                                            { upsert: false, returnOriginal: false, maxTimeMS: 2000})
+            .then(function(response) {
+                if ((response.value.operationsCount == response.value.operationsProcessed) && (response.value.activeVoteSetCount == response.value.activeVoteSetProcessed) && (response.value.status == 'Processing')) {
+                    db.collection('blocksProcessed').updateOne({ blockNumber: 26038153}, {$set: {status: 'OK'}})
+                }
+            });
+
+        let recordOperation = {transactionType: 'notHandled', ops_not_handled: opsNotHandled, skipped_ops: preProcessed, count: opsNotHandled + preProcessed, status: 'OK'};
+        mongoblock.mongoOperationProcessed(db, 26038153, recordOperation, opsNotHandled + preProcessed, 0);
+        console.log('----- Process Completed -----', ((Date.now() - launchTime)/1000/60).toFixed(2));
+    }
+}
+
 
 
 // Function to convert parameters for a date range into blockNumbers
@@ -622,7 +788,7 @@ async function fillPrices() {
                     // Skips record
                     countSkips += 1;
                 } else {
-                    // Pulls record and calculates currency rations using payout data from operations (vests, sbd, steem) and payout data from post (STU)
+                    // Pulls record and calculates currency ratios using payout data from operations (vests, sbd, steem) and payout data from post (STU)
                     await steemrequest.getComment(comment.author, comment.permlink)
                         .then(async function(body) {
                             result = JSON.parse(body).result;
