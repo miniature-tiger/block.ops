@@ -144,8 +144,10 @@ function getOpsAppBase(localBlockNo, processOps) {
     let options = {
         url: url20,
         method: 'POST',
-        body: dataString
+        body: dataString,
+        //timeout: 500
     }
+
     request(options, function(error, response, body) {
         processOps(error, response, body, localBlockNo);
     });
@@ -168,7 +170,7 @@ function getActiveVotes(localAuthor, localPermlink) {
 
     return requestPromise(options)
         .catch(function(error) {
-            console.log('Error in steemrequest.getActiveVotes:', 'Error name:',  error.name, 'Error message:', error.message, 'API params:', error.options.body); 
+            console.log('Error in steemrequest.getActiveVotes:', 'Error name:',  error.name, 'Error message:', error.message, 'API params:', error.options.body);
         });
 }
 

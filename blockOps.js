@@ -12,9 +12,12 @@ console.log('-------------------------------------------------------------------
 // Imports
 // -------
 const mongodb = require('mongodb');
+const fsPromises = require('fs').promises;
+const path = require('path');
 const steemrequest = require('./steemrequest/steemrequest.js')
 const mongoblock = require('./mongoblock.js')
 const helperblock = require('./helperblock.js')
+const steemdata = require('./steemdata.js')
 const postprocessing = require('./postprocessing.js')
 
 
@@ -22,7 +25,7 @@ const postprocessing = require('./postprocessing.js')
 // -------
 const MongoClient = mongodb.MongoClient;
 const url = 'mongodb://localhost:27017';
-const dbName = 'blockOpsTesting';
+const dbName = 'blockOps2';
 
 
 // Command Line inputs and parameters
@@ -45,8 +48,12 @@ if (commandLine == 'setup') {
     checkAllBlockDates();
 } else if (commandLine == 'filloperations') {
     fillOperations();
+} else if (commandLine == 'patchoperations') {
+    patchVirtualOperations();
 } else if (commandLine == 'fillprices') {
     fillPrices();
+} else if (commandLine == 'displayprices') {
+    displayPrices();
 } else if (commandLine == 'reportcomments') {
     // Market share reports on Steem applications
     reportComments();
@@ -58,10 +65,14 @@ if (commandLine == 'setup') {
     investigation();
 } else if (commandLine == 'findcurator') {
     findCurator();
+} else if (commandLine == 'postcuration') {
+    postCuration();
 } else if (commandLine == 'validate') {
     validateComments();
 } else if (commandLine == 'showblock') {
     showBlock();
+} else if (commandLine == 'votetiming') {
+    voteTiming();
 } else {
     // end
 }
@@ -268,6 +279,8 @@ async function fillOperations() {
     let priorArrayCount = 0;
     let blocksOK = 0;
     let blockProcessArray = [];
+    let blockProcessArrayFlag = false;
+    let debug = false;
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     console.log(openBlock, closeBlock, parameterIssue);
@@ -275,32 +288,37 @@ async function fillOperations() {
     blocksToProcess = closeBlock - openBlock;
     console.log(openBlock, blocksToProcess);
 
-    fiveBlock();
+    fiveBlock('original');
 
     // Function to extract data of x blocks from the blockchain (originally five blocks)
     // ---------------------------------------------------------------------------------
-    async function fiveBlock() {
-
+    async function fiveBlock(localMarker) {
+        if(debug == true) {console.log('localMarker', localMarker)};
         let launchBlocks = Math.min(blocksPerRound, blocksToProcess - blocksStarted - blocksOK);
         console.log(launchBlocks, blocksToProcess - blocksStarted - blocksOK);
         for (var i = 0; i < launchBlocks; i+=1) {
+            //console.log('blocksStarted - priorArrayCount == blockProcessArray.length', blocksStarted, - priorArrayCount, blockProcessArray.length)
             if(blocksStarted - priorArrayCount == blockProcessArray.length) {
+                blockProcessArrayFlag = true;
                 do {
                     priorArrayCount += blockProcessArray.length;
+                    if(debug == true) {console.log('localMarker', localMarker, 'ARRAY CALLED', openBlock + priorArrayCount + blocksOK, Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock)-1)};
                     blockProcessArray = await mongoblock.reportBlocksProcessed(db, openBlock + priorArrayCount + blocksOK, Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock), 'return');
-                    console.log('array called', openBlock + priorArrayCount + blocksOK, Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock)-1);
                     blocksOK += ( Math.min(openBlock + priorArrayCount + blocksOK + blockProcessNumber, closeBlock) - (openBlock + priorArrayCount + blocksOK) - blockProcessArray.length);
-                    console.log('blocksOK', blocksOK);
+                    if(debug == true) {console.log('blocksOK updated from last array call:', localMarker, blocksOK)};
                 }
                 while (blockProcessArray.length == 0 && (blocksStarted + blocksOK < blocksToProcess));
+                blockProcessArrayFlag = false;
 
                 // Reset operations counter in blocksProcessed for blocks being rerun
                 mongoblock.resetBlocksProcessed(db, blockProcessArray[0], blockProcessArray[blockProcessArray.length-1]);
             }
 
             if (blocksStarted + blocksOK < blocksToProcess) {
+                if(debug == true) {console.log('localMarker, blockNo = blockProcessArray[blocksStarted - priorArrayCount]:', localMarker, blocksStarted, priorArrayCount, blocksStarted - priorArrayCount)};
                 blockNo = blockProcessArray[blocksStarted - priorArrayCount];
                 // Gets data for one block, processes it in callback "processOps"
+                if(debug == true) {console.log('getOpsAppBase', blockNo)};
                 steemrequest.getOpsAppBase(blockNo, processOps);
                 blocksStarted += 1;
             } else {
@@ -317,6 +335,10 @@ async function fillOperations() {
         if (!error) {
             try {
                 let result = JSON.parse(body).result;
+                if( result == undefined) {
+                    console.log(localBlockNo)
+                    console.dir(JSON.parse(body), {depth: null})
+                }
                 //console.dir(JSON.parse(body), {depth: null})
                 let numberOfOps = result.length;
                 let opsNotHandled = 0;
@@ -329,10 +351,14 @@ async function fillOperations() {
 
                 // Setting check number for number of active_votes sets to be processed in a block
                 for (let operation of result) {
-                    if (operation.op[0] == 'author_reward') {
-                        authorRewardCount += 1;
+                    if (operation.virtual_op != virtualOpNumber) {
+                        virtualOpNumber = operation.virtual_op;
+                        if (operation.op[0] == 'author_reward') {
+                            authorRewardCount += 1;
+                        }
                     }
                 }
+                virtualOpNumber = 0;
 
                 // Add block document to blocksProcessed collection in Mongo
                 let blockRecord = {blockNumber: localBlockNo, timestamp: timestamp, status: 'Processing', operationsCount: numberOfOps, activeVoteSetCount: authorRewardCount, activeVoteSetProcessed: 0};
@@ -368,7 +394,7 @@ async function fillOperations() {
                             mongoblock.processVote(operation, operationNumber, mongoblock.mongoVote, db);
                         } else if (operation.op[0] == 'author_reward') {
                             mongoblock.validateComments(db, operation);
-                            activeVotes(operation);
+                            activeVotes(operation, db);
                             mongoblock.processAuthorReward(operation, mongoblock.mongoAuthorReward, db);
                         } else if (operation.op[0] == 'comment_benefactor_reward') {
                             mongoblock.processBenefactorReward(operation, mongoblock.mongoBenefactorReward, db);
@@ -389,13 +415,15 @@ async function fillOperations() {
                 mongoblock.mongoOperationProcessed(db, localBlockNo, recordOperation, opsNotHandled + skippedOperations, 0);
                 blocksCompleted += 1;
 
+                if(debug == true) {console.log('blocksStarted - blocksCompleted', blocksStarted, - blocksCompleted)};
                 if (blocksCompleted + blocksOK == blocksToProcess) {
                     completeOperationsLoop();
 
-                } else if (blocksStarted - blocksCompleted < 4) {
-                    fiveBlock();
+                } else if ((blocksStarted - blocksCompleted < 4) && (blockProcessArrayFlag == false)) {
+                    fiveBlock('marker' + blocksStarted);
                 }
             } catch (error) {
+                console.log(error)
                 console.log('Error in processing virtual ops:', localBlockNo, 'Error logged.');
                 let errorRecord = {blockNumber: localBlockNo, status: 'error'};
                 mongoblock.mongoErrorLog(db, errorRecord, 0);
@@ -406,6 +434,7 @@ async function fillOperations() {
             console.log('Error in processing virtual ops:', localBlockNo);
             if (error.errno = 'ENOTFOUND') {
                 console.log('ENOTFOUND: Most likely error is connection lost. Error logged.'); // to do: deal with checking which blocks loaded, reconnecting, and restarting loop.
+                console.log(error);
             } else {
                 console.log(error);
             }
@@ -415,53 +444,6 @@ async function fillOperations() {
             blocksCompleted += 1;
             errorCount += 1;
         }
-    }
-
-    async function activeVotes(localOperation) {
-        await steemrequest.getActiveVotes(localOperation.op[1].author, localOperation.op[1].permlink)
-            .then(async function(votesReturned) {
-                let votesList = JSON.parse(votesReturned);
-
-                // Setting up check controls for each active votes run
-                let activeProcessedCount = 0
-                let activeVotesRunIsComplete = 0;
-                let logStatus = 'Processing';
-                let logActive = { associatedOp: localOperation.virtual_op, transactionType: 'active_vote', count: 0, status: logStatus, activeVotesCount: votesList.result.length }
-                mongoblock.mongoActiveProcessed(db, localOperation.block, logActive, 0, 'start', 0);
-
-                // Loop to process list of active votes - now only updated in Mongo once the full run is complete
-                for (let vote of votesList.result) {
-                    let activeData = await mongoblock.processActiveVote(vote, localOperation.op[1].author, localOperation.op[1].permlink, localOperation.block, localOperation.virtual_op, mongoblock.mongoActiveVote, db);
-                    let dataInsertCheck = await mongoblock.mongoActiveVote(db, localOperation.block, localOperation.virtual_op, activeData, 0);
-                    if (dataInsertCheck == 'skipped' || dataInsertCheck.ok == 1) {
-                        activeProcessedCount += 1;
-                    } else {
-                        // Issue with active Vote processing - block will be marked as error due to short count
-                        console.log('Issue with active Vote processing: block', localOperation.block)
-                    }
-                }
-                // active_vote set completes successfully
-                if (activeProcessedCount == votesList.result.length) {
-                    logStatus = 'OK';
-                    logActive = { associatedOp: localOperation.virtual_op, transactionType: 'active_vote', status: 'OK', activeVotesProcessed: activeProcessedCount }
-                    activeVotesRunIsComplete = 1;
-                } else {
-                    // Failure in active_vote processing - logged as error
-                    console.log('Failure in active upvote processing - reported as error')
-                    logStatus = 'Error';
-                    logActive = { associatedOp: localOperation.virtual_op, transactionType: 'active_vote', status: 'Error', activeVotesProcessed: activeProcessedCount }
-                    let errorRecord = {blockNumber: localOperation.block, status: 'error'};
-                    mongoblock.mongoErrorLog(db, errorRecord, 0);
-                }
-                // Block document in Mongo updated with status of active vote run set
-                mongoblock.mongoActiveProcessed(db, localOperation.block, logActive, activeVotesRunIsComplete, 'end', 0);
-            })
-            .catch(function(error) {
-                console.log('Error in ', localOperation.block, localOperation.op[1].author, localOperation.op[1].permlink, 'active votes. Error logged.');
-                let errorRecord = {blockNumber: localOperation.block, status: 'error'};
-                mongoblock.mongoErrorLog(db, errorRecord, 0);
-                console.log(error)
-            })
     }
 
     function completeOperationsLoop() {
@@ -481,6 +463,215 @@ async function fillOperations() {
 
 // Closing fillOperations
 }
+
+
+// Separated outside of main space
+async function activeVotes(localOperation, db) {
+    await steemrequest.getActiveVotes(localOperation.op[1].author, localOperation.op[1].permlink)
+        .then(async function(votesReturned) {
+            let votesList = JSON.parse(votesReturned);
+
+            // Setting up check controls for each active votes run
+            let activeProcessedCount = 0
+            let activeVotesRunIsComplete = 0;
+            let logStatus = 'Processing';
+            let logActive = { associatedOp: localOperation.virtual_op, transactionType: 'active_vote', count: 0, status: logStatus, activeVotesCount: votesList.result.length }
+            mongoblock.mongoActiveProcessed(db, localOperation.block, logActive, 0, 'start', 0);
+
+            // Loop to process list of active votes - now only updated in Mongo once the full run is complete
+            for (let vote of votesList.result) {
+                let activeData = await mongoblock.processActiveVote(vote, localOperation.op[1].author, localOperation.op[1].permlink, localOperation.block, localOperation.virtual_op, mongoblock.mongoActiveVote, db);
+                let dataInsertCheck = await mongoblock.mongoActiveVote(db, localOperation.block, localOperation.virtual_op, activeData, 0);
+                if (dataInsertCheck == 'skipped' || dataInsertCheck.ok == 1) {
+                    activeProcessedCount += 1;
+                } else {
+                    // Issue with active Vote processing - block will be marked as error due to short count
+                    console.log('Issue with active Vote processing: block', localOperation.block)
+                }
+            }
+            // active_vote set completes successfully
+            if (activeProcessedCount == votesList.result.length) {
+                logStatus = 'OK';
+                logActive = { associatedOp: localOperation.virtual_op, transactionType: 'active_vote', status: 'OK', activeVotesProcessed: activeProcessedCount }
+                activeVotesRunIsComplete = 1;
+            } else {
+                // Failure in active_vote processing - logged as error
+                console.log('Failure in active upvote processing - reported as error')
+                logStatus = 'Error';
+                logActive = { associatedOp: localOperation.virtual_op, transactionType: 'active_vote', status: 'Error', activeVotesProcessed: activeProcessedCount }
+                let errorRecord = {blockNumber: localOperation.block, status: 'error'};
+                mongoblock.mongoErrorLog(db, errorRecord, 0);
+            }
+            // Block document in Mongo updated with status of active vote run set
+            mongoblock.mongoActiveProcessed(db, localOperation.block, logActive, activeVotesRunIsComplete, 'end', 0);
+        })
+        .catch(function(error) {
+            console.log('Error in ', localOperation.block, localOperation.op[1].author, localOperation.op[1].permlink, 'active votes. Error logged.');
+            let errorRecord = {blockNumber: localOperation.block, status: 'error'};
+            mongoblock.mongoErrorLog(db, errorRecord, 0);
+            console.log(error)
+        })
+}
+
+
+// Patch virtual operations
+// --------------------------------------------------------
+// After a halt of the blockchain there can be a very large number of virtual operations associated with one block
+// This patch can be applied where these virtual operations cannot be obtained due to steemit.api server timeout
+async function patchVirtualOperations() {
+
+    let opsNotHandled = 0;
+    let preProcessed = 0;
+    let preActiveProcessed = 0;
+    let count = 0;
+    let lastCall = Date.now();
+    let lastMongo = Date.now();
+
+    // Connect to Mongo
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    // Function to load json file of operations into memory
+    function jsonFile(folderName, fileName) {
+        console.log(path.join(__dirname, folderName, fileName))
+        return fsPromises.readFile(path.join(__dirname, folderName, fileName), 'utf8')
+            .catch(function(error) {
+                console.log(error);
+            });
+    }
+
+    //Reset operations counter in blocksProcessed for blocks being rerun
+    db.collection('blocksProcessed')
+        .updateMany({ blockNumber: 26038153, status: {$ne: 'OK'}},
+                {$set: {operationsProcessed: 0, activeVoteSetProcessed: 0}, $pull: { operations: {transactionType: "notHandled"}}}, {upsert: false})
+        .catch(function(error) {
+            console.log(error);
+        });
+
+    // Call function to read json file into memory, parse, and annotate with default statuses
+    let lostArray = await jsonFile('lostBlocks', '26038153.json');
+    console.log('Array loaded.', ((Date.now() - launchTime)/1000/60).toFixed(2));
+    lostArray = JSON.parse(lostArray);
+    for (let entry of lostArray) {
+        entry.opStatus = 'unprocessed';
+        if (entry.op[0] == 'author_reward') {
+            entry.associatedStatus = 'unprocessed';
+        }
+    }
+    console.log('Array parsed and annotated.', ((Date.now() - launchTime)/1000/60).toFixed(2));
+
+    // Start of processing loop - add blockrecord (operations processed log) to blocksProcessed
+    let timestamp = new Date('2018-09-17T19:56:51.000Z');
+    let blockRecord = {blockNumber: 26038153, timestamp: timestamp, status: 'Processing', operationsCount: lostArray.length, activeVoteSetCount: 6759, activeVoteSetProcessed: 0};
+    mongoblock.mongoBlockProcessed(db, blockRecord, 0);
+
+    // Update statuses in lostArray based on any previous runs
+    await db.collection('blocksProcessed')
+        .aggregate([
+            { $match : {blockNumber: 26038153}},
+            { $project : {_id: 0, operations: 1 }},
+            { $unwind : "$operations"},
+        ])
+        .toArray()
+        .then(async function(records) {
+            console.log('Aggregation finished.', ((Date.now() - launchTime)/1000/60).toFixed(2));
+            for (let record of records) {
+                if (record.operations.hasOwnProperty('virtualOp')) {
+                    let arrayPosition = lostArray.findIndex(fI => fI.virtual_op == record.operations.virtualOp);
+                    lostArray[arrayPosition].opStatus = record.operations.status;
+                } else if (record.operations.hasOwnProperty('associatedOp')) {
+                    let arrayPosition = lostArray.findIndex(fI => fI.virtual_op == record.operations.associatedOp);
+                    lostArray[arrayPosition].associatedStatus = record.operations.status;
+                } else {
+                    console.log('neither virtualop nor associatedop');
+                }
+            }
+            patchRunner();
+    });
+
+    // Main processor - takes each lostArray operation and processes using existing functions
+    // Timeouts used to regulate calls to API (otherwise loop can make many calls very quickly)
+    async function patchRunner() {
+        if (count == lostArray.length) {
+            finishUp();
+        } else {
+
+            if (count % 100 == 0) {
+                console.log(count + ' records of ' + lostArray.length + ' processed.', ((Date.now() - launchTime)/1000/60).toFixed(2));
+            }
+            let operation = lostArray[count];
+
+            if (operation.op[0] == 'author_reward') {
+                if (operation.opStatus != 'OK') {
+                    console.log('getting comment', operation.op[1].author, operation.op[1].permlink);
+                    lastCall = Date.now();
+                    await steemrequest.getComment(operation.op[1].author, operation.op[1].permlink)
+                            .then(async function(body) {
+                                result = JSON.parse(body).result;
+                                let forwardDate = new Date(result.created + '.000Z');
+                                forwardDate.setUTCDate(forwardDate.getUTCDate()+7);
+                                operation.timestamp = forwardDate.toISOString().slice(0, 19);
+                                mongoblock.validateComments(db, operation);
+                                mongoblock.processAuthorReward(operation, mongoblock.mongoAuthorReward, db);
+                                lastMongo = Date.now();
+                          });
+                } else {
+                    preProcessed += 1;
+                }
+                if (operation.associatedStatus != 'OK') {
+                    activeVotes(operation, db);
+                    lastCall = Date.now();
+                    lastMongo = Date.now();
+                } else {
+                    preActiveProcessed += 1;
+                }
+                count += 1;
+                setTimeout(patchRunner, Math.max(100 - (Date.now() - lastCall), 50 - (Date.now() - lastMongo), 0));
+
+            } else if (operation.op[0] == 'curation_reward') {
+                if (operation.opStatus != 'OK') {
+                    mongoblock.processCuratorReward(operation, mongoblock.mongoCuratorReward, db);
+                    lastMongo = Date.now();
+                } else {
+                    preProcessed += 1;
+                }
+                count += 1;
+                setTimeout(patchRunner, Math.max(200 - (Date.now() - lastMongo), 0));
+
+            } else if (operation.op[0] == 'comment_benefactor_reward') {
+                if (operation.opStatus != 'OK') {
+                    mongoblock.processBenefactorReward(operation, mongoblock.mongoBenefactorReward, db);
+                    lastMongo = Date.now();
+                } else {
+                    preProcessed += 1;
+                }
+                count += 1;
+                setTimeout(patchRunner, Math.max(100 - (Date.now() - lastMongo), 0));
+            } else {
+                opsNotHandled += 1;
+                patchRunner();
+            }
+        }
+    }
+
+    // Adding numbers of blocks preprocessed or not handled and checking complete
+    function finishUp() {
+        db.collection('blocksProcessed').findOneAndUpdate(  { blockNumber: 26038153},
+                                                            { $inc: {activeVoteSetProcessed: preActiveProcessed}},
+                                                            { upsert: false, returnOriginal: false, maxTimeMS: 2000})
+            .then(function(response) {
+                if ((response.value.operationsCount == response.value.operationsProcessed) && (response.value.activeVoteSetCount == response.value.activeVoteSetProcessed) && (response.value.status == 'Processing')) {
+                    db.collection('blocksProcessed').updateOne({ blockNumber: 26038153}, {$set: {status: 'OK'}})
+                }
+            });
+
+        let recordOperation = {transactionType: 'notHandled', ops_not_handled: opsNotHandled, skipped_ops: preProcessed, count: opsNotHandled + preProcessed, status: 'OK'};
+        mongoblock.mongoOperationProcessed(db, 26038153, recordOperation, opsNotHandled + preProcessed, 0);
+        console.log('----- Process Completed -----', ((Date.now() - launchTime)/1000/60).toFixed(2));
+    }
+}
+
 
 
 // Function to convert parameters for a date range into blockNumbers
@@ -527,6 +718,8 @@ async function blockRangeDefinition(db) {
 // ----------------------------------
 async function fillPrices() {
     let pricesArray = [];
+    let HF20 = 26256743;
+
     // Connect to Mongo
     client = await MongoClient.connect(url, { useNewUrlParser: true });
     console.log('Connected to server.');
@@ -535,69 +728,176 @@ async function fillPrices() {
     // Check prices index exists
     let checkCp = await mongoblock.checkCollectionExists(db, 'prices');
     if (checkCp == false) {
-        db.collection('prices').createIndex({payout_blockNumber: 1}, {unique:true});
+        //db.collection('prices').createIndex({payout_blockNumber: 1}, {unique:true});
     }
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+
+    let firstHour = await mongoblock.showBlockMongo(db, openBlock, false);
+    if (firstHour[0].hasOwnProperty('timestamp')) {
+        firstHourID = firstHour[0].timestamp.toISOString().slice(0, 13);
+    } else {
+        console.log('have blocks for date range been processed?')
+        parameterIssue = true;
+    }
+
+    let lastHour = await mongoblock.showBlockMongo(db, closeBlock-1, false);
+    if (lastHour[0].hasOwnProperty('timestamp')) {
+        lastHourID = lastHour[0].timestamp.toISOString().slice(0, 13);
+    } else {
+        console.log('have blocks for date range been processed?')
+        parameterIssue = true;
+    }
+
     if (parameterIssue == false) {
-        // Select a comment from each hour (around the 30 minute mark)
+        // Select a comment from each hour (around the 20-40 minute mark!)
         pricesArray = await mongoblock.mongoFillPrices(db, openBlock, closeBlock);
+        console.log(pricesArray)
 
-        // Skip prices that have previously been inserted to prices collection
-        let previousPrices = await db.collection('prices')
-            .find({payout_blockNumber: { $gte: openBlock, $lt: closeBlock }})
-            .project({_id: 0, date: 1})
-            .toArray();
+        // Check first and last hour present
+        let priceIssue = false;
 
-        let countSkips = 0;
-        for (let comment of pricesArray) {
-            priorFlag = false;
-            for (let priorDate of previousPrices) {
-                if (comment._id.year == priorDate.date.year && comment._id.month == priorDate.date.month && comment._id.day == priorDate.date.day && comment._id.hour == priorDate.date.hour) {
-                    priorFlag = true;
+        if (pricesArray[0]._id != firstHourID) {
+            console.log('price for first hour of date range is missing');
+            priceIssue = true;
+        }
+        if (pricesArray[pricesArray.length-1]._id != lastHourID) {
+            console.log('price for last hour of date range is missing');
+            priceIssue = true;
+        }
+
+        if (priceIssue == false) {
+            // Skip prices that have previously been inserted to prices collection
+            let previousPrices = await db.collection('prices')
+                .find({payout_blockNumber: { $gte: openBlock, $lt: closeBlock }})
+                .project({_id: 1})
+                .toArray();
+            let countSkips = 0;
+
+            // Loop through pricesArray starts here
+            for (let comment of pricesArray) {
+
+                let priorFlag = false;
+                for (let priorDate of previousPrices) {
+                    if (comment._id == priorDate._id) {
+                        priorFlag = true;
+                    }
+                }
+
+                if (priorFlag == true) {
+                    // Skips record
+                    countSkips += 1;
+                } else {
+                    // Pulls record and calculates currency ratios using payout data from operations (vests, sbd, steem) and payout data from post (STU)
+                    await steemrequest.getComment(comment.author, comment.permlink)
+                        .then(async function(body) {
+                            result = JSON.parse(body).result;
+                            comment.basis = 'derived';
+                            //comment._id = comment.dateHour.toISOString().slice(0, 13);
+                            comment.curator_payout_vests = Number(comment.curator_payout_vests.toFixed(6));
+                            comment.curator_payout_value = Number(result.curator_payout_value.split(' ', 1)[0]);
+                            comment.author_payout_value = Number(result.total_payout_value.split(' ', 1)[0]);
+                            comment.beneficiaries_payout_value = 0;
+                            comment.total_payout_value = Number((comment.curator_payout_value + comment.author_payout_value).toFixed(3));
+                            beneficiariesSum = 0;
+                            if (result.beneficiaries.length > 0) {
+                                for (var i = 0; i < result.beneficiaries.length; i+=1) {
+                                    beneficiariesSum += result.beneficiaries[i].weight;
+                                }
+                                comment.total_payout_value = Number(((comment.author_payout_value / (1-(beneficiariesSum/10000))) + comment.curator_payout_value).toFixed(3));
+                                comment.beneficiaries_payout_value = Number((comment.total_payout_value - comment.author_payout_value - comment.curator_payout_value).toFixed(3));
+                            }
+                            comment.vestsPerSTU = Number((comment.curator_payout_vests / comment.curator_payout_value).toFixed(3));
+                            comment.STUPerVests = Number((comment.curator_payout_value / comment.curator_payout_vests).toPrecision(8));
+                            comment.steemPerSTU = 0;
+                            comment.STUPerSteem = 0;
+                            if (comment.author_payout_steem > 0) {
+                                comment.steemPerSTU = Number((comment.author_payout_steem / (comment.author_payout_value - comment.author_payout_sbd - (comment.author_payout_vests/comment.vestsPerSTU))).toFixed(3));
+                                comment.STUPerSteem = Number(((comment.author_payout_value - comment.author_payout_sbd - (comment.author_payout_vests/comment.vestsPerSTU)) / (comment.author_payout_steem)).toPrecision(8));
+                            }
+
+                            if (comment.payout_blockNumber < HF20) {
+                                console.log('HF19')
+                                comment.rsharesPerSTU = Number((comment.rshares / comment.total_payout_value).toFixed(3));
+                                comment.STUPerRshares = Number((comment.total_payout_value / comment.rshares).toPrecision(8));
+                            } else {
+                                console.log('HF20')
+                                comment.rsharesPerSTU = Number(((comment.rshares * 0.75) / (comment.author_payout_value + comment.beneficiaries_payout_value)).toFixed(3));
+                                comment.STUPerRshares = Number(((comment.author_payout_value + comment.beneficiaries_payout_value)/ (comment.rshares * 0.75)).toPrecision(8));
+                            }
+                            await mongoblock.mongoPrice(db, comment, 0);
+
+                            console.log(comment)
+                    })
                 }
             }
+        console.log(countSkips + ' record skips as already exits in prices collection.')
 
-            if (priorFlag == true) {
-                // Skips record
-                countSkips += 1;
-            } else {
-                // Pulls record and calculates currency rations using payout data from operations (vests, sbd, steem) and payout data from post (STU)
-                await steemrequest.getComment(comment.author, comment.permlink)
-                    .then(async function(body) {
-                        result = JSON.parse(body).result;
-                        comment.date = comment._id;
-                        delete comment._id;
-                        comment.curator_payout_vests = Number(comment.curator_payout_vests.toFixed(6));
-                        comment.curator_payout_value = Number(result.curator_payout_value.split(' ', 1)[0]);
-                        comment.author_payout_value = Number(result.total_payout_value.split(' ', 1)[0]);
-                        comment.beneficiaries_payout_value = 0;
-                        comment.total_payout_value = Number((comment.curator_payout_value + comment.author_payout_value).toFixed(3));
-                        beneficiariesSum = 0;
-                        if (result.beneficiaries.length > 0) {
-                            for (var i = 0; i < result.beneficiaries.length; i+=1) {
-                                beneficiariesSum += result.beneficiaries[i].weight;
-                            }
-                            comment.total_payout_value = Number(((comment.author_payout_value / (1-(beneficiariesSum/10000))) + comment.curator_payout_value).toFixed(3));
-                            comment.beneficiaries_payout_value = Number((comment.total_payout_value - comment.author_payout_value - comment.curator_payout_value).toFixed(3));
+        let updatedPrices = await db.collection('prices')
+            .find({payout_blockNumber: { $gte: openBlock, $lt: closeBlock }})
+            .project({_id: 1, vestsPerSTU: 1, steemPerSTU: 1, rsharesPerSTU:1, STUPerVests: 1, STUPerRshares: 1, STUPerSteem: 1})
+            .toArray();
+
+        for (var j = 0; j < updatedPrices.length-1; j+=1) {
+            let nextDate = new Date(updatedPrices[j+1]._id + ':00:00.000Z');
+            let currentDate = new Date(updatedPrices[j]._id + ':00:00.000Z');
+            if ( nextDate - currentDate > (1000 * 60 * 60)) {
+                // interpolate
+                console.log('interpolating...')
+                let gapsNumber = Number(((nextDate - currentDate) / (1000 * 60 * 60)).toFixed(0));
+                for (var k = 1; k < gapsNumber; k+=1) {
+                    let interpolatedDate = new Date(currentDate.getTime() + ((1000 * 60 * 60) * k));
+                    let interpolate =
+                        {   _id: interpolatedDate.toISOString().slice(0, 13),
+                            basis: 'interpolated',
+                            vestsPerSTU: (updatedPrices[j].vestsPerSTU + (k * (updatedPrices[j+1].vestsPerSTU - updatedPrices[j].vestsPerSTU) / gapsNumber)),
+                            steemPerSTU: (updatedPrices[j].steemPerSTU + (k * (updatedPrices[j+1].steemPerSTU - updatedPrices[j].steemPerSTU) / gapsNumber)),
+                            rsharesPerSTU: (updatedPrices[j].rsharesPerSTU + (k * (updatedPrices[j+1].rsharesPerSTU - updatedPrices[j].rsharesPerSTU) / gapsNumber)),
+                            STUPerVests: (updatedPrices[j].STUPerVests + (k * (updatedPrices[j+1].STUPerVests - updatedPrices[j].STUPerVests) / gapsNumber)),
+                            STUPerSteem: (updatedPrices[j].STUPerSteem + (k * (updatedPrices[j+1].STUPerSteem - updatedPrices[j].STUPerSteem) / gapsNumber)),
+                            STUPerRshares: (updatedPrices[j].STUPerRshares + (k * (updatedPrices[j+1].STUPerRshares - updatedPrices[j].STUPerRshares) / gapsNumber)),
                         }
-                        comment.vestsPerSTU = Number((comment.curator_payout_vests / comment.curator_payout_value).toFixed(3));
-                        comment.rsharesPerSTU = Number((comment.rshares / comment.total_payout_value).toFixed(3));
-                        comment.steemPerSTU = 0;
-                        if (comment.author_payout_steem > 0) {
-                            comment.steemPerSTU = Number((comment.author_payout_steem / (comment.author_payout_value - comment.author_payout_sbd - (comment.author_payout_vests/comment.vestsPerSTU))).toFixed(3));
-                        }
-                        await mongoblock.mongoPrice(db, comment, 0);
-                })
+                        console.log(interpolate)
+                    // update to prices
+                    await mongoblock.mongoPrice(db, interpolate, 0);
+                }
             }
         }
-        console.log(countSkips + ' record skips as already exits in prices collection.')
+        console.log('closing mongo db');
+        client.close();
+        }
+    } else {
+        console.log('Parameter issue');
+    }
+}
+
+
+// Function to display and export prices over specific dates
+// ----------------------------------------------------------
+// allows date graphs to be produced for reasonableness checks
+async function displayPrices() {
+    // Connect to Mongo
+    let displayPrices = [];
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        displayPrices = await mongoblock.obtainPricesMongo(db, openBlock, closeBlock);
+        for (let price of displayPrices) {
+            console.log(price)
+        }
+        const fieldNames = ['_id', 'vestsPerSTU', 'steemPerSTU', 'rsharesPerSTU', 'STUPerVests', 'STUPerSteem', 'STUPerRshares'];
+        postprocessing.dataExport(displayPrices.slice(0), 'prices_export', fieldNames);
+
         console.log('closing mongo db');
         client.close();
     } else {
         console.log('Parameter issue');
     }
 }
+
 
 
 // Function to provide parameters for reportBlocksProcessed
@@ -614,6 +914,7 @@ async function reportBlocks() {
         console.log('Parameter issue');
     }
 }
+
 
 
 // Function to provide parameters for findCommentsMongo
@@ -642,13 +943,29 @@ async function reportComments() {
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
 
     if (parameterIssue == false) {
-        let marketShareSummary = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock);
-        let exportData = postprocessing.marketShareProcessing(marketShareSummary);
-        const fieldNames = ['application', 'authors', 'authorsRank', 'posts', 'postsRank', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_vests', 'curator_payout_vests'];
+        let marketShareCreatedSummary = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock, parameter3, 'created', 'all', 'default');
+        let marketSharePayoutSummary = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock, parameter3, 'payout', 'all', 'default');
+        let exportData = postprocessing.marketShareProcessing(marketShareCreatedSummary, marketSharePayoutSummary);
+        let fieldNames = ['application', 'authors', 'authorsRank', 'posts', 'postsRank', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_sbd', 'benefactor_payout_steem', 'benefactor_payout_vests', 'curator_payout_vests', 'author_payout_sbd_STU', 'author_payout_steem_STU', 'author_payout_vests_STU', 'benefactor_payout_sbd_STU', 'benefactor_payout_steem_STU', 'benefactor_payout_vests_STU', 'curator_payout_vests_STU'];
         postprocessing.dataExport(exportData.slice(0), 'marketShareTest', fieldNames);
+
+        let productionStatsPerDayData = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock, parameter3, 'created', 'all', 'allByDate');
+        let exportData2 = postprocessing.productionStatsByDayProcessing(productionStatsPerDayData);
+        //console.log( exportData2 )
+        fieldNames = ['date', 'authors', 'posts', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_sbd', 'benefactor_payout_steem', 'benefactor_payout_vests', 'curator_payout_vests', 'author_payout_sbd_STU', 'author_payout_steem_STU', 'author_payout_vests_STU', 'benefactor_payout_sbd_STU', 'benefactor_payout_steem_STU', 'benefactor_payout_vests_STU', 'curator_payout_vests_STU'];
+        postprocessing.dataExport(exportData2.slice(0), 'productionStatsByDay', fieldNames);
+
+        let postsStatsPerDayData = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock, parameter3, 'created', 'posts', 'allByDate');
+        let exportData3 = postprocessing.productionStatsByDayProcessing(postsStatsPerDayData);
+        //console.log( exportData3 )
+        fieldNames = ['date', 'authors', 'posts', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_sbd', 'benefactor_payout_steem', 'benefactor_payout_vests', 'curator_payout_vests', 'author_payout_sbd_STU', 'author_payout_steem_STU', 'author_payout_vests_STU', 'benefactor_payout_sbd_STU', 'benefactor_payout_steem_STU', 'benefactor_payout_vests_STU', 'curator_payout_vests_STU'];
+        postprocessing.dataExport(exportData3.slice(0), 'postsStatsByDay', fieldNames);
+
         console.log('');
         console.log('closing mongo db');
         console.log('------------------------------------------------------------------------');
+        let runTime = Date.now() - launchTime;
+        console.log('End time: ' + runTime);
         console.log('------------------------------------------------------------------------');
         client.close();
     } else {
@@ -709,12 +1026,89 @@ async function validateComments() {
 
 
 
-// Set-up for validation routines for comments
-// -------------------------------------------
+// Set-up for routine to show a single block
+// -----------------------------------------
 async function showBlock() {
     client = await MongoClient.connect(url, { useNewUrlParser: true });
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    await mongoblock.showBlockMongo(db, Number(parameter1));
+    await mongoblock.showBlockMongo(db, Number(parameter1), true);
+}
+
+
+
+// Vote-timing histogram and curation rewards v votes ratio analysis - includes export
+// -----------------------------------------------------------------------------------
+async function voteTiming() {
+    let voteTimingArray = [];
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+
+        let voteTimingArray = await mongoblock.voteTimingMongo(db, openBlock, closeBlock, steemdata.bidbotArray);
+        const fieldNames = ['bucket', 'rshares', 'upvote_rshares', 'downvote_rshares', 'vote_value', 'upvote_vote_value', 'downvote_vote_value', 'curator_vests', 'curator_payout_value', 'curation_ratio', 'count'];
+
+        Object.keys(voteTimingArray).forEach(function(voteAnalysis) {
+            console.log(voteAnalysis);
+            console.dir(voteTimingArray[voteAnalysis], {depth: null})
+            postprocessing.dataExport(voteTimingArray[voteAnalysis].slice(0), voteAnalysis, fieldNames);
+        })
+
+    } else {
+        console.log('Parameter issue');
+    }
+    console.log('closing mongo db');
+    client.close();
+}
+
+
+
+// Post curation for a single block
+// --------------------------------
+async function postCuration() {
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        console.log('Getting curation posts.');
+        let curationPosts = await mongoblock.postCurationMongo(db, openBlock, closeBlock);
+
+        console.dir(curationPosts, {depth: null})
+        for (let post of curationPosts) {
+            console.log('Getting comment.');
+            await steemrequest.getComment(post.author, post.permlink)
+                .then(async function(body) {
+                    let result = JSON.parse(body).result;
+                    post.curator_payout_value = Number(result.curator_payout_value.split(' ', 1)[0]);
+                    post.author_payout_value = Number(result.total_payout_value.split(' ', 1)[0]);
+                    post.beneficiaries_payout_value = 0;
+                    post.total_payout_value = Number((post.curator_payout_value + post.author_payout_value).toFixed(3));
+                    beneficiariesSum = 0;
+                    if (result.beneficiaries.length > 0) {
+                        for (var i = 0; i < result.beneficiaries.length; i+=1) {
+                            beneficiariesSum += result.beneficiaries[i].weight;
+                        }
+                        post.total_payout_value = Number(((post.author_payout_value / (1-(beneficiariesSum/10000))) + post.curator_payout_value).toFixed(3));
+                        post.beneficiaries_payout_value = Number((post.total_payout_value - post.author_payout_value - post.curator_payout_value).toFixed(3));
+                    }
+                    post.author_payout_perc = Number((post.author_payout_value / post.total_payout_value).toFixed(3));
+                    post.lost_weight_perc = Number((post.lost_weight / post.weight).toFixed(3));
+                    post.rshares_rewardpool_perc = Number((post.rshares_rewardpool / post.rshares).toFixed(4));
+                    post.author_payout_rewardpool_perc = Number((post.author_payout_value / (post.total_payout_value / (1 - post.rshares_rewardpool_perc))).toFixed(3));
+                    post.curator_payout_scaled = post.curator_payout_value * post.curation_vests_full / post.vests_sum;
+                    post.author_payout_vestsfull_perc = Number((post.author_payout_value / (post.total_payout_value - post.curator_payout_value + post.curator_payout_scaled)).toFixed(3));
+                    console.dir(post, {depth: null})
+                });
+        }
+        console.log('closing mongo db');
+        client.close();
+    } else {
+        console.log('Parameter issue');
+    }
 }

@@ -41,3 +41,14 @@ function blocksToMidnight(firstDate, secondDate, secondsPerBlock) {
 }
 
 module.exports.blocksToMidnight = blocksToMidnight;
+
+
+
+// Function translates date into new date based on date-and-hour only (i.e. no minutes or seconds)
+// ------------------------------------------------------------------------------------------------------
+function UTCDateHourOnly(localDate) {
+    let hourOnlyDate = new Date(Date.UTC(localDate.getUTCFullYear(), localDate.getUTCMonth(), localDate.getUTCDate(), localDate.getUTCHours()));
+    return hourOnlyDate;
+}
+
+module.exports.UTCDateHourOnly = UTCDateHourOnly;
