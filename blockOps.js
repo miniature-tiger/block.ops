@@ -25,7 +25,7 @@ const postprocessing = require('./postprocessing.js')
 // -------
 const MongoClient = mongodb.MongoClient;
 const url = 'mongodb://localhost:27017';
-const dbName = 'blockOps2';
+const dbName = 'blockOps3';
 
 
 // Command Line inputs and parameters
@@ -73,6 +73,8 @@ if (commandLine == 'setup') {
     showBlock();
 } else if (commandLine == 'votetiming') {
     voteTiming();
+} else if (commandLine == 'utopianvotes') {
+    utopianVotes();
 } else {
     // end
 }
@@ -1111,4 +1113,37 @@ async function postCuration() {
     } else {
         console.log('Parameter issue');
     }
+}
+
+
+
+// Validation routines for comments
+// --------------------------------
+async function utopianVotes() {
+    let utopianVoteSplitByDay = [];
+
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        let utopianVoteSplitByDay = await mongoblock.utopianVotesMongo(db, openBlock, closeBlock);
+        const fieldNames = ['voteDay', 'steemstem', 'steemmakers', 'mspwaves', 'comments', 'other',
+                                    'development', 'analysis', 'translations', 'tutorials', 'video-tutorials',
+                                    'bug-hunting', 'ideas', 'graphics', 'blog', 'documentation', 'copywriting', 'antiabuse'];
+        postprocessing.dataExport(utopianVoteSplitByDay.slice(0), 'utopianVoteSplitByDay', fieldNames);
+
+    let utopianAuthors = await mongoblock.utopianAuthorsMongo(db, openBlock, closeBlock);
+    const fieldNames2 = ['_id.author', 'percent', 'count'];
+    postprocessing.dataExport(utopianAuthors.slice(0), 'utopianAuthors', fieldNames2);
+
+    } else {
+        console.log('Parameter issue');
+    }
+
+console.log('closing mongo db');
+client.close();
+
+
 }

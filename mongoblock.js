@@ -47,40 +47,60 @@ module.exports.dateToBlockNumber = dateToBlockNumber;
 function processComment(localOperation, localOperationNumber, mongoComment, db) {
     let appName = '';
     let appVersion = '';
+    let category = '';
+    let tags = [];
+    let links = [];
     let msecondsInSevenDays = 604800000;
     let commentTimestamp = new Date(localOperation.timestamp + '.000Z');
     let json = {};
 
+    //console.log('-------------------------------')
     // Parsing application / version data
     if (localOperation.op[1].hasOwnProperty('json_metadata')) {
         try {
             json = JSON.parse(localOperation.op[1].json_metadata);
+            //console.log(json)
+            if (json == null) {
+                [appName, appVersion] = ['other', 'badJson']
+                // tags and links stay as empty arrays
+            } else {
+                if (json.hasOwnProperty('app')) {
+                    if (json.app == null) {
+                        [appName, appVersion] = ['other', 'nullApp']
+                    } else if (json.app.hasOwnProperty('name')) { // parley
+                        appName = json.app.name;
+                    } else if (json.app instanceof Array) { // cryptoowls
+                        console.log(json.app, typeof json.app, json.app instanceof Array)
+                        appName = json.app[0];
+                    } else {
+                        [appName, appVersion] = json.app.split('/');
+                    }
+                } else {
+                    [appName, appVersion] = ['other', 'noApp']
+                }
+
+                if (json.hasOwnProperty('tags')) {
+                    category = json.tags[0];
+                    tags = json.tags;
+                }
+
+                if (json.hasOwnProperty('links')) {
+                    links = json.links;
+                }
+
+            }
+
         } catch(error) {
             [appName, appVersion] = ['other', 'badJson']
+            // tags and links stay as empty arrays
         }
 
-        if (json == null || appName == 'other')
-            [appName, appVersion] = ['other', 'badJson']
-        else {
-            if (json.hasOwnProperty('app')) {
-                if (json.app == null) {
-                    [appName, appVersion] = ['other', 'nullApp']
-                } else if (json.app.hasOwnProperty('name')) { // parley
-                    appName = json.app.name;
-                } else if (json.app instanceof Array) { // cryptoowls
-                    console.log(json.app, typeof json.app, json.app instanceof Array)
-                    appName = json.app[0];
-                } else {
-                    [appName, appVersion] = json.app.split('/');
-                }
-            } else {
-                [appName, appVersion] = ['other', 'noApp']
-            }
-        }
     } else {
         [appName, appVersion] = ['other', 'noJson']
+        // tags and links stay as empty arrays
     }
 
+    //console.log(appName, appVersion, category, tags);
 
     // Basic depth measure (post or comment)
     if (localOperation.op[1].parent_author == '') {
@@ -91,7 +111,8 @@ function processComment(localOperation, localOperationNumber, mongoComment, db) 
 
     // Setting record if no author_payout (i.e. blocks running forwards)
     let commentRecord = {author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, blockNumber: localOperation.block, timestamp: commentTimestamp,
-                    transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: 'commentUnverified', application: appName, applicationVersion: appVersion, postComment: postComment};
+                    transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: 'commentUnverified', application: appName, applicationVersion: appVersion,
+                    postComment: postComment, category: category, tags: tags, links: links};
 
     // Self-validation of original comments using 7 day payout period
     db.collection('comments').find({ author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, operations: 'author_reward'}).toArray()
@@ -161,7 +182,7 @@ module.exports.mongoComment = mongoComment;
 // Vote - processing of block operation
 // ---------------------------------------------
 function processVote(localOperation, localOperationNumber, mongoVote, db) {
-    let voteRecord = {author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, voter: localOperation.op[1].voter, percent: Number((localOperation.op[1].weight/100).toFixed(0)), vote_timestamp: new Date(localOperation.timestamp + '.000Z'), vote_blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: localOperation.op[0]};
+    let voteRecord = {author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, voter: localOperation.op[1].voter, percent: Number((localOperation.op[1].weight/100).toFixed(2)), vote_timestamp: new Date(localOperation.timestamp + '.000Z'), vote_blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: localOperation.op[0]};
     mongoVote(db, voteRecord, 0);
 }
 
@@ -1144,6 +1165,7 @@ function findCommentsMongo(localApp, db, openBlock, closeBlock) {
         {$and : [
             { blockNumber: { $gte: openBlock, $lt: closeBlock }},
             { operations: 'comment'},
+            //{ operations: 'vote'},
             //{operations: 'author_reward'},
         ]}
 
@@ -1649,6 +1671,116 @@ async function voteTimingMongo(db, openBlock, closeBlock, userGroup) {
 }
 
 module.exports.voteTimingMongo = voteTimingMongo;
+
+
+
+// Vote timing analysis: Covers all posts (not comments), all users / self-votes / a parameterised user group
+// ----------------------------------------------------------------------------------------------------------
+async function utopianVotesMongo(db, openBlock, closeBlock) {
+    let utopianResults = [];
+    let voteAccount = 'utopian-io';
+    let contributionTypes = ['development', 'analysis', 'translations', 'tutorials', 'video-tutorials', 'bug-hunting', 'ideas', 'idea', 'graphics', 'blog', 'documentation', 'copywriting', 'antiabuse'];
+    let tagGroup = ['steemstem']
+
+    await db.collection('comments').aggregate([
+            { $match :
+                    { "curators.voter": voteAccount}},
+            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, category: 1, tags: {$ifNull: [ "$tags", []]} }},
+            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, tags: 1, category: 1,
+                          type: {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 0]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 0]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 1]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 1]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 2]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 2]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 3]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 3]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 4]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 4]}, else: false
+                              }}}}}}}}}},
+                          steemstemVote: {$cond: { if: { $in: [ 'steemstem', "$curators.voter" ]}, then: true, else: false }},
+                          steemstemTag: {$cond: { if: { $in: [ 'steemstem', "$tags"]}, then: true, else: false }},
+                          steemmakersVote: {$cond: { if: { $in: [ 'steemmakers', "$curators.voter" ]}, then: true, else: false }},
+                          steemmakersTag: {$cond: { if: { $in: [ 'steemmakers', "$tags"]}, then: true, else: false }},
+                          mspwavesVote: {$cond: { if: { $in: [ 'msp-waves', "$curators.voter" ]}, then: true, else: false }},
+                          mspwavesTag: {$cond: { if: { $in: [ 'mspwaves', "$tags"]}, then: true, else: false }},
+                        }},
+
+            { $unwind : "$curators" },
+            { $match : { $and :[
+                { "curators.voter": voteAccount},
+                { "curators.vote_blockNumber": { $gte: openBlock, $lt: closeBlock }},
+              ]}},
+
+            { $project: {_id: 0, author: 1, postComment: 1, curators: 1,
+                            steemstemVote: 1, steemmakersVote: 1, mspwavesTag: 1, type: 1, postComment: 1,
+                            voteDay: {$substr: ["$curators.vote_timestamp", 0, 10]}}},
+            { $group: {_id : { voteDay: "$voteDay", steemstem: "$steemstemVote", steemmakers: "$steemmakersVote", mspwaves: "$mspwavesTag", contribution: "$type", postComment: "$postComment"},
+                                percent: { $sum: "$curators.percent"},
+                                count: { $sum: 1}
+                              }},
+            { $sort: {"_id.voteDay": 1}},
+            ])
+            .toArray()
+            .then(function(categories) {
+                console.dir(categories, {depth: null})
+                let blankRecord = {voteDay: '', steemstem: 0.00, steemmakers: 0.00, mspwaves: 0.00,
+                                            development: 0.00, analysis: 0.00, translations: 0.00, tutorials: 0.00, 'video-tutorials': 0.00,
+                                            'bug-hunting': 0.00, ideas: 0.00, graphics: 0.00, blog: 0.00, documentation: 0.00, copywriting: 0.00, antiabuse: 0.00,
+                                            comments: 0.00, other: 0.00};
+
+                for (let category of categories) {
+                    let utopianPosition = utopianResults.findIndex(fI => fI.voteDay == category._id.voteDay);
+                    let record = JSON.parse(JSON.stringify(blankRecord));
+                    if (utopianPosition == -1) {
+                        utopianResults.push(record)
+                        utopianPosition = utopianResults.length - 1;
+                    }
+
+                    record.voteDay = category._id.voteDay;
+                    if (category._id.steemstem == true) {
+                        utopianResults[utopianPosition].steemstem = Number(category.percent.toFixed(2));
+                    } else if (category._id.steemmakers == true) {
+                        utopianResults[utopianPosition].steemmakers = Number(category.percent.toFixed(2));
+                    } else if (category._id.mspwaves == true) {
+                        utopianResults[utopianPosition].mspwaves = Number(category.percent.toFixed(2));
+                    } else if (category._id.postComment == 1) {
+                        utopianResults[utopianPosition].comments = Number(category.percent.toFixed(2));
+                    } else if (category._id.contribution == 'idea') {
+                        utopianResults[utopianPosition].ideas = Number(category.percent.toFixed(2));
+                    } else if (category._id.contribution != false) {
+                        utopianResults[utopianPosition][category._id.contribution] = Number(category.percent.toFixed(2));
+                    } else {
+                        utopianResults[utopianPosition].other = Number(category.percent.toFixed(2));
+                    }
+                    console.log(utopianResults[utopianPosition])
+                }
+            });
+    return utopianResults;
+}
+
+module.exports.utopianVotesMongo = utopianVotesMongo;
+
+
+
+// Vote timing analysis: Covers all posts (not comments), all users / self-votes / a parameterised user group
+// ----------------------------------------------------------------------------------------------------------
+async function utopianAuthorsMongo(db, openBlock, closeBlock) {
+
+    return await db.collection('comments').aggregate([
+            { $match :
+                    { "curators.voter": 'utopian-io'}},
+            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, category: 1}},
+            { $unwind : "$curators" },
+            { $match : { $and :[
+                { "curators.voter": 'utopian-io'},
+                { "curators.vote_blockNumber": { $gte: openBlock, $lt: closeBlock }},
+              ]}},
+            { $group: {_id : { author: "$author"},
+                                percent: { $sum: "$curators.percent"},
+                                count: { $sum: 1}
+                              }},
+            { $sort: {percent: -1}},
+            ])
+            .toArray()
+}
+
+module.exports.utopianAuthorsMongo = utopianAuthorsMongo;
 
 
 
