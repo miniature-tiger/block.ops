@@ -75,6 +75,8 @@ if (commandLine == 'setup') {
     voteTiming();
 } else if (commandLine == 'utopianvotes') {
     utopianVotes();
+} else if (commandLine == 'transfersummary') {
+    transferSummary();
 } else {
     // end
 }
@@ -265,8 +267,12 @@ async function fillOperations() {
     if (checkCo == false) {
         db.collection('comments').createIndex({author: 1, permlink: 1}, {unique:true});
     }
-    let checkCb = await mongoblock.checkCollectionExists(db, 'blocksProcessed');
-    if (checkCb == false) {
+    let checkTr = await mongoblock.checkCollectionExists(db, 'comments');
+    if (checkTr == false) {
+        db.collection('transfers').createIndex({blockNumber: 1, from: 1, to: 1}, {unique:true});
+    }
+    let checkBp = await mongoblock.checkCollectionExists(db, 'blocksProcessed');
+    if (checkBp == false) {
         db.collection('blocksProcessed').createIndex({blockNumber: 1}, {unique:true});
     }
 
@@ -402,6 +408,8 @@ async function fillOperations() {
                             mongoblock.processBenefactorReward(operation, mongoblock.mongoBenefactorReward, db);
                         } else if (operation.op[0] == 'curation_reward') {
                             mongoblock.processCuratorReward(operation, mongoblock.mongoCuratorReward, db);
+                        } else if (operation.op[0] == 'transfer') {
+                            mongoblock.processTransfer(operation, operationNumber, mongoblock.mongoTransfer, db);
                         } else {
                             // Operations not handled:
                             opsNotHandled += 1;
@@ -1117,7 +1125,7 @@ async function postCuration() {
 
 
 
-// Validation routines for comments
+// Utopian votes analysis
 // --------------------------------
 async function utopianVotes() {
     let utopianVoteSplitByDay = [];
@@ -1146,4 +1154,27 @@ console.log('closing mongo db');
 client.close();
 
 
+}
+
+
+
+// Summaries of transfers
+// --------------------------------
+async function transferSummary() {
+    let transferArray = [];
+
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        let transferArray = await mongoblock.transferSummaryMongo(db, openBlock, closeBlock, parameter3);
+        console.dir(transferArray, {depth: null})
+    } else {
+        console.log('Parameter issue');
+    }
+
+console.log('closing mongo db');
+client.close();
 }

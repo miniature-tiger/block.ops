@@ -467,6 +467,47 @@ module.exports.mongoCuratorReward = mongoCuratorReward;
 
 
 
+// Transfer - processing of block operation
+// ---------------------------------------------
+function processTransfer(localOperation, localOperationNumber, mongoVote, db) {
+    let [transferAmount, transferCurrency] = localOperation.op[1].amount.split(' ');
+    transferAmount = Number(transferAmount);
+    let transferRecord = {blockNumber: localOperation.block, from: localOperation.op[1].from, to: localOperation.op[1].to, amount: transferAmount, currency: transferCurrency, memo: localOperation.op[1].memo, timestamp: new Date(localOperation.timestamp + '.000Z'), transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber};
+    mongoVote(db, transferRecord, 0);
+}
+
+module.exports.processTransfer = processTransfer;
+
+
+
+// Transfer - update of mongo record
+// -----------------------------------------------
+function mongoTransfer(db, localRecord, reattempt) {
+    let maxReattempts = 1;
+    let logTransfer = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: 'transfer', count: 1, status: 'OK'};
+        db.collection('transfers').updateOne({ blockNumber: localRecord.blockNumber, from: localRecord.from, to: localRecord.to}, { $set: localRecord }, {upsert: true})
+            .then(function(response) {
+                mongoOperationProcessed(db, localRecord.blockNumber, logTransfer, 1, 0);
+            })
+            .catch(function(error) {
+                if(error.code == 11000) {
+                    if (reattempt < maxReattempts) {
+                        console.log('E11000 error with <', localRecord, '> mongoTransfer. Re-attempting...');
+                        mongoVote(db, localRecord, 1);
+                    } else {
+                        console.log('E11000 error with <', localRecord, '> mongoTransfer. Maximum reattempts surpassed.');
+                    }
+                } else {
+                    console.log('Non-standard error with <', localRecord, '> mongoTransfer.');
+                    console.log(error);
+                }
+            });
+}
+
+module.exports.mongoTransfer = mongoTransfer;
+
+
+
 // Initialisation of blocksProcessed documents for each block and handling of reprocessed blocks
 // ---------------------------------------------------------------------------------------------
 function mongoBlockProcessed(db, localBlockRecord, reattempt) {
@@ -1674,8 +1715,8 @@ module.exports.voteTimingMongo = voteTimingMongo;
 
 
 
-// Vote timing analysis: Covers all posts (not comments), all users / self-votes / a parameterised user group
-// ----------------------------------------------------------------------------------------------------------
+// Utopian analysis: Type of vote (contribution, moderator comment, trails etc) and Contribution type (analysis, translation etc)
+// ------------------------------------------------------------------------------------------------------------------------------
 async function utopianVotesMongo(db, openBlock, closeBlock) {
     let utopianResults = [];
     let voteAccount = 'utopian-io';
@@ -1758,8 +1799,8 @@ module.exports.utopianVotesMongo = utopianVotesMongo;
 
 
 
-// Vote timing analysis: Covers all posts (not comments), all users / self-votes / a parameterised user group
-// ----------------------------------------------------------------------------------------------------------
+// Utopian analysis: grouping by authors
+// -------------------------------------
 async function utopianAuthorsMongo(db, openBlock, closeBlock) {
 
     return await db.collection('comments').aggregate([
@@ -1781,6 +1822,36 @@ async function utopianAuthorsMongo(db, openBlock, closeBlock) {
 }
 
 module.exports.utopianAuthorsMongo = utopianAuthorsMongo;
+
+
+
+// Summary of transfers in and out for Account
+// --------------------------------------------
+async function transferSummaryMongo(db, openBlock, closeBlock, localAccount) {
+    console.log('Summarising all transfers to and from', localAccount)
+    return await db.collection('transfers').aggregate([
+            { $match :
+                    { $or: [
+                        { from: localAccount},
+                        { to: localAccount},
+                    ]}},
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+
+            { $project: {_id: 0, from: 1, to: 1, amount: 1, currency: 1, timestamp: 1,
+                          party: {$cond: { if: { $eq: [ localAccount, "$to" ]}, then: "$from", else: "$to" }},
+                        }},
+            { $facet: {
+                "party": [
+                    { $sort: {party: 1, timestamp: 1}}
+                ],
+                "time": [
+                    { $sort: {timestamp: 1}}
+                ],}}
+          ])
+            .toArray()
+}
+
+module.exports.transferSummaryMongo = transferSummaryMongo;
 
 
 
