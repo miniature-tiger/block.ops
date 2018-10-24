@@ -69,34 +69,25 @@ Adding a user name returns only those votes from the individual user.
 
 ## Road map: (still fluid!)
 
-1) Complete the code for processing of blocks / operations
-2) Complete fx functionality
-3) Consider analyses to be included
-4) Add a user-friendly front-end
-5) Add charts
-6) Realtime / forward processing
+1) Complete processing of desired operations
+2) Add a user-friendly front-end
+3) Add charts
+4) Realtime / forward processing
 
 
 ### Short term
-* Add date range to reportcomments - COMPLETE
-* Include chosen operations in filloperations to allow marketshare analysis to be run 
-  (needs author numbers and author, curator and benefactor payout numbers) - COMPLETE
 * Consider other operations to be analysed from the list below:
   
-  Definitely need:
-  'author_reward' - ADDED
-  'curation_reward' - ADDED
-  'comment_benefactor_reward' - ADDED
-  
-  Likely to include:
-  'vote' - ADDED
+  To be included:
   'custom_json',
-  'transfer',
   'return_vesting_delegation',
   'delegate_vesting_shares',
+  'account_create',
+  'account_create_with_delegation',
+  'claim_account',
+  'create_claimed_account'
   
-  For consideration:
-  
+  For future consideration:
   'claim_reward_balance',
   'transfer_to_vesting',
   'transfer_to_savings',
@@ -112,9 +103,6 @@ Adding a user name returns only those votes from the individual user.
   'feed_publish',
   'comment_options',
   'account_update',
-  
-  'account_create',
-  'account_create_with_delegation',
   
   'limit_order_cancel',
   'limit_order_create',
