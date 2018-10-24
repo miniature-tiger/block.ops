@@ -492,19 +492,59 @@ function mongoTransfer(db, localRecord, reattempt) {
             .catch(function(error) {
                 if(error.code == 11000) {
                     if (reattempt < maxReattempts) {
-                        console.log('E11000 error with <', localRecord, '> mongoTransfer. Re-attempting...');
-                        mongoVote(db, localRecord, 1);
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoTransfer. Re-attempting...');
+                        mongoTransfer(db, localRecord, reattempt + 1);
                     } else {
-                        console.log('E11000 error with <', localRecord, '> mongoTransfer. Maximum reattempts surpassed.');
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoTransfer. Maximum reattempts surpassed.');
                     }
                 } else {
-                    console.log('Non-standard error with <', localRecord, '> mongoTransfer.');
+                    console.log('Non-standard error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoTransfer.');
                     console.log(error);
                 }
             });
 }
 
 module.exports.mongoTransfer = mongoTransfer;
+
+
+
+// Delegation - processing of block operation
+// ---------------------------------------------
+function processDelegation(localOperation, localOperationNumber, mongoDelegation, db) {
+    let vestingAmount = Number(localOperation.op[1].vesting_shares.split(' ', 1));
+    let delegationRecord = {blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, type: 'delegate', delegator: localOperation.op[1].delegator, delegatee: localOperation.op[1].delegatee, vesting_shares: vestingAmount, timestamp: new Date(localOperation.timestamp + '.000Z')};
+    mongoDelegation(db, delegationRecord, 0);
+}
+
+module.exports.processDelegation = processDelegation;
+
+
+
+// Delegation - update of mongo record
+// -----------------------------------------------
+function mongoDelegation(db, localRecord, reattempt) {
+    let maxReattempts = 1;
+    let logDelegation = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: 'delegation', count: 1, status: 'OK'};
+        db.collection('delegation').updateOne({ blockNumber: localRecord.blockNumber, delegator: localRecord.delegator, delegatee: localRecord.delegatee}, { $set: localRecord }, {upsert: true})
+            .then(function(response) {
+                mongoOperationProcessed(db, localRecord.blockNumber, logDelegation, 1, 0);
+            })
+            .catch(function(error) {
+                if(error.code == 11000) {
+                    if (reattempt < maxReattempts) {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoDelegation. Re-attempting...');
+                        mongoDelegation(db, localRecord, reattempt + 1);
+                    } else {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoDelegation. Maximum reattempts surpassed.');
+                    }
+                } else {
+                    console.log('Non-standard error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoDelegation.');
+                    console.log(error);
+                }
+            });
+}
+
+module.exports.mongoDelegation = mongoDelegation;
 
 
 
@@ -1852,6 +1892,36 @@ async function transferSummaryMongo(db, openBlock, closeBlock, localAccount) {
 }
 
 module.exports.transferSummaryMongo = transferSummaryMongo;
+
+
+
+// Summary of delegations for Account
+// --------------------------------------------
+async function delegationSummaryMongo(db, openBlock, closeBlock, localAccount) {
+    console.log('Summarising all delegation of', localAccount)
+    return await db.collection('delegation').aggregate([
+            { $match :
+                    { $or: [
+                        { delegator: localAccount},
+                        { delegatee: localAccount},
+                    ]}},
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+
+            { $project: {_id: 0, delegator: 1, delegatee: 1, vesting_shares: 1, type: 1, timestamp: 1, blockNumber: 1, transactionNumber: 1, operationNumber: 1, virtualOp: 1,
+                          dateHour: {$substr: ["$timestamp", 0, 13]}}},
+            { $lookup : {   from: "prices",
+                            localField: "dateHour",
+                            foreignField: "_id",
+                            as: "payout_prices"   }},
+            { $project : {  _id: 0, delegator: 1, delegatee: 1, vesting_shares: 1, type: 1, timestamp: 1, blockNumber: 1, transactionNumber: 1, operationNumber: 1, virtualOp: 1,
+                            "payout_prices": { "$arrayElemAt": [ "$payout_prices", 0 ]}}},
+            { $project : {  _id: 0, delegator: 1, delegatee: 1, vesting_shares: 1, type: 1, timestamp: 1, blockNumber: 1, transactionNumber: 1, operationNumber: 1, virtualOp: 1,
+                                  vesting_shares_STU: { $multiply: [ "$vesting_shares", "$payout_prices.STUPerVests" ]}}}
+            ])
+            .toArray()
+}
+
+module.exports.delegationSummaryMongo = delegationSummaryMongo;
 
 
 

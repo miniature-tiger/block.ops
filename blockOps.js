@@ -77,6 +77,8 @@ if (commandLine == 'setup') {
     utopianVotes();
 } else if (commandLine == 'transfersummary') {
     transferSummary();
+} else if (commandLine == 'delegationsummary') {
+    delegationSummary();
 } else {
     // end
 }
@@ -267,14 +269,22 @@ async function fillOperations() {
     if (checkCo == false) {
         db.collection('comments').createIndex({author: 1, permlink: 1}, {unique:true});
     }
-    let checkTr = await mongoblock.checkCollectionExists(db, 'comments');
+    db.collection('transfers').createIndex({blockNumber: 1, from: 1, to: 1}, {unique:true});
+    let checkTr = await mongoblock.checkCollectionExists(db, 'transfers');
     if (checkTr == false) {
         db.collection('transfers').createIndex({blockNumber: 1, from: 1, to: 1}, {unique:true});
+    }
+
+    let checkDg = await mongoblock.checkCollectionExists(db, 'delegation');
+    if (checkDg == false) {
+        db.collection('delegation').createIndex({blockNumber: 1, delegator: 1, delegatee: 1}, {unique:true});
     }
     let checkBp = await mongoblock.checkCollectionExists(db, 'blocksProcessed');
     if (checkBp == false) {
         db.collection('blocksProcessed').createIndex({blockNumber: 1}, {unique:true});
     }
+
+
 
     let blocksStarted = 0;
     let blocksCompleted = 0;
@@ -396,10 +406,16 @@ async function fillOperations() {
 
                     // Main loop for controlling processing of operations
                     if (skipFlag == false) {
+                        // Transaction operations
                         if (operation.op[0] == 'comment') {
                             mongoblock.processComment(operation, operationNumber, mongoblock.mongoComment, db);
                         } else if (operation.op[0] == 'vote') {
                             mongoblock.processVote(operation, operationNumber, mongoblock.mongoVote, db);
+                        } else if (operation.op[0] == 'transfer') {
+                            mongoblock.processTransfer(operation, operationNumber, mongoblock.mongoTransfer, db);
+                        } else if (operation.op[0] == 'delegate_vesting_shares') {
+                            mongoblock.processDelegation(operation, operationNumber, mongoblock.mongoDelegation, db);
+                        // Virtual operations
                         } else if (operation.op[0] == 'author_reward') {
                             mongoblock.validateComments(db, operation);
                             activeVotes(operation, db);
@@ -408,10 +424,8 @@ async function fillOperations() {
                             mongoblock.processBenefactorReward(operation, mongoblock.mongoBenefactorReward, db);
                         } else if (operation.op[0] == 'curation_reward') {
                             mongoblock.processCuratorReward(operation, mongoblock.mongoCuratorReward, db);
-                        } else if (operation.op[0] == 'transfer') {
-                            mongoblock.processTransfer(operation, operationNumber, mongoblock.mongoTransfer, db);
                         } else {
-                            // Operations not handled:
+                        // Operations not handled:
                             opsNotHandled += 1;
                             if (!unknownVirtuals.includes(operation.op[0])) {
                                 unknownVirtuals.push(operation.op[0]);
@@ -467,6 +481,7 @@ async function fillOperations() {
         console.log('Blocks previously processed: ' + blocksOK);
         console.log('Error Count: ' + errorCount);
         console.log('Average speed: ' + (runTime/blocksCompleted/1000).toFixed(4) + 's.');
+        console.log(unknownVirtuals);
         //console.log('db closing');
         //client.close();
     }
@@ -1136,7 +1151,7 @@ async function utopianVotes() {
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
-        let utopianVoteSplitByDay = await mongoblock.utopianVotesMongo(db, openBlock, closeBlock);
+        utopianVoteSplitByDay = await mongoblock.utopianVotesMongo(db, openBlock, closeBlock);
         const fieldNames = ['voteDay', 'steemstem', 'steemmakers', 'mspwaves', 'comments', 'other',
                                     'development', 'analysis', 'translations', 'tutorials', 'video-tutorials',
                                     'bug-hunting', 'ideas', 'graphics', 'blog', 'documentation', 'copywriting', 'antiabuse'];
@@ -1169,8 +1184,31 @@ async function transferSummary() {
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
-        let transferArray = await mongoblock.transferSummaryMongo(db, openBlock, closeBlock, parameter3);
+        transferArray = await mongoblock.transferSummaryMongo(db, openBlock, closeBlock, parameter3);
         console.dir(transferArray, {depth: null})
+    } else {
+        console.log('Parameter issue');
+    }
+
+console.log('closing mongo db');
+client.close();
+}
+
+
+
+// Summaries of delegations
+// --------------------------------
+async function delegationSummary() {
+    let delegationArray = [];
+
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        delegationArray = await mongoblock.delegationSummaryMongo(db, openBlock, closeBlock, parameter3);
+        console.dir(delegationArray, {depth: null})
     } else {
         console.log('Parameter issue');
     }
