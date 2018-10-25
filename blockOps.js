@@ -75,6 +75,8 @@ if (commandLine == 'setup') {
     voteTiming();
 } else if (commandLine == 'utopianvotes') {
     utopianVotes();
+} else if (commandLine == 'bidbotprofit') {
+    bidbotProfitability();
 } else if (commandLine == 'transfersummary') {
     transferSummary();
 } else if (commandLine == 'delegationsummary') {
@@ -1165,10 +1167,58 @@ async function utopianVotes() {
         console.log('Parameter issue');
     }
 
-console.log('closing mongo db');
-client.close();
+    console.log('closing mongo db');
+    client.close();
+}
 
 
+
+// Bidbot profitability analysis
+// --------------------------------
+async function bidbotProfitability() {
+
+    let botsIncArray = [ "appreciator", "boomerang", "booster", "buildawhale", "postpromoter", "rocky1", "smartsteem", "upme" ]
+    let bidbotTransferArray = [];
+    let bidbotOutput = [];
+    let counter = 0;
+
+    // Connects to MongoDB
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    // Defines and validates parameters
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+
+        // Obtains all transfers to and from listed bidbots in date range
+        bidbotTransferArray = await mongoblock.bidbotTransfersMongo(db, openBlock, closeBlock, botsIncArray);
+
+        // Parses transfer memo and obtains bidbot vote values from comments collection based on author/permlink
+        for (let transfer of bidbotTransferArray) {
+            if (transfer.memo.includes("/@")) {
+                let url = transfer.memo.substr(transfer.memo.indexOf("/@")+2, transfer.memo.length - (transfer.memo.indexOf("/@")+2));
+                let [urlAccount, urlPermlink] = url.split("/");
+                let urlPostVote = await mongoblock.bidbotVoteValuesMongo(db, urlAccount, urlPermlink, transfer.to);
+                if (urlPostVote.length > 0) {
+                    let voteValueVoting = Number((urlPostVote[0].voteDate_value * 0.75).toFixed(3));
+                    let voteValuePayout = Number((urlPostVote[0].votePayout_value * 0.75).toFixed(3));
+                    bidbotOutput.push({bidbot: transfer.to, author: urlPostVote[0].author, transfer: transfer.amount, voteValueVoting: voteValueVoting, voteValuePayout: voteValuePayout, voteTimestamp: urlPostVote[0].curators.vote_timestamp, voteDateHour: urlPostVote[0].voteDateHour, payoutDateHour: urlPostVote[0].payoutDateHour })
+                    counter += 1;
+                }
+            }
+        }
+        console.log(counter);
+
+        // Output to csv file
+        const fieldNames = ['bidbot', 'author', 'transfer', 'voteValueVoting', 'voteValuePayout', 'voteTimestamp', 'voteDateHour', 'payoutDateHour']
+        postprocessing.dataExport(bidbotOutput.slice(0), 'bidbotAnalysis', fieldNames);
+
+    } else {
+        console.log('Parameter issue');
+    }
+    console.log('closing mongo db');
+    client.close();
 }
 
 

@@ -1867,6 +1867,65 @@ module.exports.utopianAuthorsMongo = utopianAuthorsMongo;
 
 // Summary of transfers in and out for Account
 // --------------------------------------------
+async function bidbotTransfersMongo(db, openBlock, closeBlock, accountArray) {
+    console.log('Matching transfers to votes', accountArray)
+    return await db.collection('transfers').aggregate([
+            { $match :
+                    { $or: [
+                        { from: { $in: accountArray}},
+                        { to:{ $in: accountArray}},
+                    ]}},
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+            { $match : { currency: 'SBD' }},
+
+            { $project: {_id: 0, from: 1, to: 1, amount: 1, currency: 1, timestamp: 1, memo: 1 }},
+            { $sort: {timestamp: 1}}
+            ])
+            .toArray()
+}
+
+module.exports.bidbotTransfersMongo = bidbotTransfersMongo;
+
+
+
+// Summary of vote values at vote and payout
+// --------------------------------------------
+async function bidbotVoteValuesMongo(db, localAuthor, localPermlink, localBot) {
+
+    return db.collection('comments').aggregate([
+          { $match : { author: localAuthor, permlink: localPermlink, "curators.voter": localBot }},
+          { $unwind : "$curators" },
+          { $match : { "curators.voter": localBot, "curators.vote_blockNumber": { $exists: true }, operations: 'author_reward'}},
+          { $project : {  _id: 0, author: 1, permlink: 1, curators: 1, operations: 1,
+                          voteDateHour: {$substr: ["$curators.vote_timestamp", 0, 13]},
+                          payoutDateHour: {$substr: ["$curators.reward_timestamp", 0, 13]},
+                        }},
+          { $lookup : {   from: "prices",
+                          localField: "voteDateHour",
+                          foreignField: "_id",
+                          as: "curator_vote_prices"   }},
+          { $lookup : {   from: "prices",
+                          localField: "payoutDateHour",
+                          foreignField: "_id",
+                          as: "curator_payout_prices"   }},
+          { $project : {  _id: 0, author: 1, permlink: 1, curators: 1, voteDateHour: 1, payoutDateHour: 1, operations: 1,
+                          "curator_vote_prices": { "$arrayElemAt": [ "$curator_vote_prices", 0 ]},
+                          "curator_payout_prices": { "$arrayElemAt": [ "$curator_payout_prices", 0 ]},
+                        }},
+          { $project : {  _id: 0, author: 1, permlink: 1, curators: 1, voteDateHour: 1, payoutDateHour: 1, operations: 1,
+                            voteDate_value: { $divide: [ "$curators.rshares", "$curator_vote_prices.rsharesPerSTU" ]},
+                            votePayout_value: { $divide: [ "$curators.rshares", "$curator_payout_prices.rsharesPerSTU" ]},
+                          }},
+          ])
+          .toArray()
+}
+
+module.exports.bidbotVoteValuesMongo = bidbotVoteValuesMongo;
+
+
+
+// Summary of transfers in and out for Account
+// --------------------------------------------
 async function transferSummaryMongo(db, openBlock, closeBlock, localAccount) {
     console.log('Summarising all transfers to and from', localAccount)
     return await db.collection('transfers').aggregate([
