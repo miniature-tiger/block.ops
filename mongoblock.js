@@ -195,7 +195,9 @@ module.exports.processVote = processVote;
 function mongoVote(db, localRecord, reattempt) {
     let maxReattempts = 1;
     let logVote = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: 'vote', count: 1, status: 'OK'};
-    db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.voter}).toArray()
+    db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.voter})
+        .project({ _id: 0, "curators.voter.$": 1, payout_blockNumber: 1})
+        .toArray()
         .then(function(result) {
             // Adds all vote details to curation set if author / permlink / voter combination not found
             if(result.length === 0) {
@@ -216,18 +218,63 @@ function mongoVote(db, localRecord, reattempt) {
                             console.log(error);
                         }
                     });
-            // Updates existing vote details for voter in curation array if author / permlink / voter combination is found
+            // Updates existing vote details for voter in curation array according to logic if author / permlink / voter combination is found
             } else {
-                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.voter}}},
-                              {$set: {"curators.$.voter": localRecord.voter, "curators.$.percent": localRecord.percent, "curators.$.vote_timestamp": localRecord.vote_timestamp,
-                                      "curators.$.vote_blockNumber": localRecord.vote_blockNumber},
-                                $addToSet: {operations: 'vote'}}, {upsert: false})
-                    .then(function(response) {
-                        mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
-                    })
-                    .catch(function(error) {
-                          console.log('Error: vote', localRecord.voter);
-                    });
+                // payout_blockNumber indicates active votes and curation_payout blocknumber has been loaded
+                if (result[0].hasOwnProperty('payout_blockNumber')) {
+                    // vote_blockNumber indicates a vote (prior or later) has been loaded
+                    if (result[0].curators[0].hasOwnProperty('vote_blockNumber')) {
+                        // check if vote is prior or later in time
+                        if (result[0].curators[0].vote_blockNumber < localRecord.vote_blockNumber) {
+                            // Current vote operation is most recent - but active vote already loaded - update block number only
+                            db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.voter}}},
+                                          {$set: {"curators.$.vote_blockNumber": localRecord.vote_blockNumber},
+                                              $addToSet: {operations: 'vote'}}, {upsert: false})
+                                .then(function(response) {
+                                    mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
+                                })
+                                .catch(function(error) {
+                                      console.log('Error: vote', localRecord.voter);
+                                });
+                        } else {
+                            // Current vote operation has been changed by more recent vote - update nothing
+                            mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
+                        }
+                    } else {
+                        // No prior vote - but active vote already loaded - update block number only
+                        db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.voter}}},
+                                      {$set: {"curators.$.vote_blockNumber": localRecord.vote_blockNumber},
+                                          $addToSet: {operations: 'vote'}}, {upsert: false})
+                            .then(function(response) {
+                                mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
+                            })
+                            .catch(function(error) {
+                                  console.log('Error: vote', localRecord.voter);
+                            });
+                    }
+                } else {
+                    if (result[0].curators[0].hasOwnProperty('vote_blockNumber')) {
+                        if (result[0].curators[0].vote_blockNumber < localRecord.vote_blockNumber) {
+                            // Current vote operation is most recent - active vote not loaded - update everything
+                            db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.voter}}},
+                                          {$set: {"curators.$.voter": localRecord.voter, "curators.$.percent": localRecord.percent, "curators.$.vote_timestamp": localRecord.vote_timestamp,
+                                                  "curators.$.vote_blockNumber": localRecord.vote_blockNumber},
+                                            $addToSet: {operations: 'vote'}}, {upsert: false})
+                                .then(function(response) {
+                                    mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
+                                })
+                                .catch(function(error) {
+                                      console.log('Error: vote', localRecord.voter);
+                                });
+                        } else {
+                            // Current vote operation has been changed by more recent vote - update nothing
+                            mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
+                        }
+                    } else {
+                        // No prior vote - active vote not loaded - not logically possible as "result" would be empty
+                        console.log('mongoVote logic error')
+                    }
+                }
             }
         })
 }
