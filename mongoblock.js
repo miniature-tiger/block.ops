@@ -47,40 +47,60 @@ module.exports.dateToBlockNumber = dateToBlockNumber;
 function processComment(localOperation, localOperationNumber, mongoComment, db) {
     let appName = '';
     let appVersion = '';
+    let category = '';
+    let tags = [];
+    let links = [];
     let msecondsInSevenDays = 604800000;
     let commentTimestamp = new Date(localOperation.timestamp + '.000Z');
     let json = {};
 
+    //console.log('-------------------------------')
     // Parsing application / version data
     if (localOperation.op[1].hasOwnProperty('json_metadata')) {
         try {
             json = JSON.parse(localOperation.op[1].json_metadata);
+            //console.log(json)
+            if (json == null) {
+                [appName, appVersion] = ['other', 'badJson']
+                // tags and links stay as empty arrays
+            } else {
+                if (json.hasOwnProperty('app')) {
+                    if (json.app == null) {
+                        [appName, appVersion] = ['other', 'nullApp']
+                    } else if (json.app.hasOwnProperty('name')) { // parley
+                        appName = json.app.name;
+                    } else if (json.app instanceof Array) { // cryptoowls
+                        console.log(json.app, typeof json.app, json.app instanceof Array)
+                        appName = json.app[0];
+                    } else {
+                        [appName, appVersion] = json.app.split('/');
+                    }
+                } else {
+                    [appName, appVersion] = ['other', 'noApp']
+                }
+
+                if (json.hasOwnProperty('tags')) {
+                    category = json.tags[0];
+                    tags = json.tags;
+                }
+
+                if (json.hasOwnProperty('links')) {
+                    links = json.links;
+                }
+
+            }
+
         } catch(error) {
             [appName, appVersion] = ['other', 'badJson']
+            // tags and links stay as empty arrays
         }
 
-        if (json == null || appName == 'other')
-            [appName, appVersion] = ['other', 'badJson']
-        else {
-            if (json.hasOwnProperty('app')) {
-                if (json.app == null) {
-                    [appName, appVersion] = ['other', 'nullApp']
-                } else if (json.app.hasOwnProperty('name')) { // parley
-                    appName = json.app.name;
-                } else if (json.app instanceof Array) { // cryptoowls
-                    console.log(json.app, typeof json.app, json.app instanceof Array)
-                    appName = json.app[0];
-                } else {
-                    [appName, appVersion] = json.app.split('/');
-                }
-            } else {
-                [appName, appVersion] = ['other', 'noApp']
-            }
-        }
     } else {
         [appName, appVersion] = ['other', 'noJson']
+        // tags and links stay as empty arrays
     }
 
+    //console.log(appName, appVersion, category, tags);
 
     // Basic depth measure (post or comment)
     if (localOperation.op[1].parent_author == '') {
@@ -91,7 +111,8 @@ function processComment(localOperation, localOperationNumber, mongoComment, db) 
 
     // Setting record if no author_payout (i.e. blocks running forwards)
     let commentRecord = {author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, blockNumber: localOperation.block, timestamp: commentTimestamp,
-                    transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: 'commentUnverified', application: appName, applicationVersion: appVersion, postComment: postComment};
+                    transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: 'commentUnverified', application: appName, applicationVersion: appVersion,
+                    postComment: postComment, category: category, tags: tags, links: links};
 
     // Self-validation of original comments using 7 day payout period
     db.collection('comments').find({ author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, operations: 'author_reward'}).toArray()
@@ -161,7 +182,7 @@ module.exports.mongoComment = mongoComment;
 // Vote - processing of block operation
 // ---------------------------------------------
 function processVote(localOperation, localOperationNumber, mongoVote, db) {
-    let voteRecord = {author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, voter: localOperation.op[1].voter, percent: Number((localOperation.op[1].weight/100).toFixed(0)), vote_timestamp: new Date(localOperation.timestamp + '.000Z'), vote_blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: localOperation.op[0]};
+    let voteRecord = {author: localOperation.op[1].author, permlink: localOperation.op[1].permlink, voter: localOperation.op[1].voter, percent: Number((localOperation.op[1].weight/100).toFixed(2)), vote_timestamp: new Date(localOperation.timestamp + '.000Z'), vote_blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: localOperation.op[0]};
     mongoVote(db, voteRecord, 0);
 }
 
@@ -443,6 +464,87 @@ function mongoCuratorReward(db, localRecord, reattempt) {
 
 
 module.exports.mongoCuratorReward = mongoCuratorReward;
+
+
+
+// Transfer - processing of block operation
+// ---------------------------------------------
+function processTransfer(localOperation, localOperationNumber, mongoVote, db) {
+    let [transferAmount, transferCurrency] = localOperation.op[1].amount.split(' ');
+    transferAmount = Number(transferAmount);
+    let transferRecord = {blockNumber: localOperation.block, from: localOperation.op[1].from, to: localOperation.op[1].to, amount: transferAmount, currency: transferCurrency, memo: localOperation.op[1].memo, timestamp: new Date(localOperation.timestamp + '.000Z'), transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber};
+    mongoVote(db, transferRecord, 0);
+}
+
+module.exports.processTransfer = processTransfer;
+
+
+
+// Transfer - update of mongo record
+// -----------------------------------------------
+function mongoTransfer(db, localRecord, reattempt) {
+    let maxReattempts = 1;
+    let logTransfer = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: 'transfer', count: 1, status: 'OK'};
+        db.collection('transfers').updateOne({ blockNumber: localRecord.blockNumber, from: localRecord.from, to: localRecord.to}, { $set: localRecord }, {upsert: true})
+            .then(function(response) {
+                mongoOperationProcessed(db, localRecord.blockNumber, logTransfer, 1, 0);
+            })
+            .catch(function(error) {
+                if(error.code == 11000) {
+                    if (reattempt < maxReattempts) {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoTransfer. Re-attempting...');
+                        mongoTransfer(db, localRecord, reattempt + 1);
+                    } else {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoTransfer. Maximum reattempts surpassed.');
+                    }
+                } else {
+                    console.log('Non-standard error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoTransfer.');
+                    console.log(error);
+                }
+            });
+}
+
+module.exports.mongoTransfer = mongoTransfer;
+
+
+
+// Delegation - processing of block operation
+// ---------------------------------------------
+function processDelegation(localOperation, localOperationNumber, mongoDelegation, db) {
+    let vestingAmount = Number(localOperation.op[1].vesting_shares.split(' ', 1));
+    let delegationRecord = {blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, type: 'delegate', delegator: localOperation.op[1].delegator, delegatee: localOperation.op[1].delegatee, vesting_shares: vestingAmount, timestamp: new Date(localOperation.timestamp + '.000Z')};
+    mongoDelegation(db, delegationRecord, 0);
+}
+
+module.exports.processDelegation = processDelegation;
+
+
+
+// Delegation - update of mongo record
+// -----------------------------------------------
+function mongoDelegation(db, localRecord, reattempt) {
+    let maxReattempts = 1;
+    let logDelegation = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: 'delegation', count: 1, status: 'OK'};
+        db.collection('delegation').updateOne({ blockNumber: localRecord.blockNumber, delegator: localRecord.delegator, delegatee: localRecord.delegatee}, { $set: localRecord }, {upsert: true})
+            .then(function(response) {
+                mongoOperationProcessed(db, localRecord.blockNumber, logDelegation, 1, 0);
+            })
+            .catch(function(error) {
+                if(error.code == 11000) {
+                    if (reattempt < maxReattempts) {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoDelegation. Re-attempting...');
+                        mongoDelegation(db, localRecord, reattempt + 1);
+                    } else {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoDelegation. Maximum reattempts surpassed.');
+                    }
+                } else {
+                    console.log('Non-standard error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoDelegation.');
+                    console.log(error);
+                }
+            });
+}
+
+module.exports.mongoDelegation = mongoDelegation;
 
 
 
@@ -1144,6 +1246,7 @@ function findCommentsMongo(localApp, db, openBlock, closeBlock) {
         {$and : [
             { blockNumber: { $gte: openBlock, $lt: closeBlock }},
             { operations: 'comment'},
+            //{ operations: 'vote'},
             //{operations: 'author_reward'},
         ]}
 
@@ -1649,6 +1752,235 @@ async function voteTimingMongo(db, openBlock, closeBlock, userGroup) {
 }
 
 module.exports.voteTimingMongo = voteTimingMongo;
+
+
+
+// Utopian analysis: Type of vote (contribution, moderator comment, trails etc) and Contribution type (analysis, translation etc)
+// ------------------------------------------------------------------------------------------------------------------------------
+async function utopianVotesMongo(db, openBlock, closeBlock) {
+    let utopianResults = [];
+    let voteAccount = 'utopian-io';
+    let contributionTypes = ['development', 'analysis', 'translations', 'tutorials', 'video-tutorials', 'bug-hunting', 'ideas', 'idea', 'graphics', 'blog', 'documentation', 'copywriting', 'antiabuse'];
+    let tagGroup = ['steemstem']
+
+    await db.collection('comments').aggregate([
+            { $match :
+                    { "curators.voter": voteAccount}},
+            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, category: 1, tags: {$ifNull: [ "$tags", []]} }},
+            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, tags: 1, category: 1,
+                          type: {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 0]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 0]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 1]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 1]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 2]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 2]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 3]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 3]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 4]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 4]}, else: false
+                              }}}}}}}}}},
+                          steemstemVote: {$cond: { if: { $in: [ 'steemstem', "$curators.voter" ]}, then: true, else: false }},
+                          steemstemTag: {$cond: { if: { $in: [ 'steemstem', "$tags"]}, then: true, else: false }},
+                          steemmakersVote: {$cond: { if: { $in: [ 'steemmakers', "$curators.voter" ]}, then: true, else: false }},
+                          steemmakersTag: {$cond: { if: { $in: [ 'steemmakers', "$tags"]}, then: true, else: false }},
+                          mspwavesVote: {$cond: { if: { $in: [ 'msp-waves', "$curators.voter" ]}, then: true, else: false }},
+                          mspwavesTag: {$cond: { if: { $in: [ 'mspwaves', "$tags"]}, then: true, else: false }},
+                        }},
+
+            { $unwind : "$curators" },
+            { $match : { $and :[
+                { "curators.voter": voteAccount},
+                { "curators.vote_blockNumber": { $gte: openBlock, $lt: closeBlock }},
+              ]}},
+
+            { $project: {_id: 0, author: 1, postComment: 1, curators: 1,
+                            steemstemVote: 1, steemmakersVote: 1, mspwavesTag: 1, type: 1, postComment: 1,
+                            voteDay: {$substr: ["$curators.vote_timestamp", 0, 10]}}},
+            { $group: {_id : { voteDay: "$voteDay", steemstem: "$steemstemVote", steemmakers: "$steemmakersVote", mspwaves: "$mspwavesTag", contribution: "$type", postComment: "$postComment"},
+                                percent: { $sum: "$curators.percent"},
+                                count: { $sum: 1}
+                              }},
+            { $sort: {"_id.voteDay": 1}},
+            ])
+            .toArray()
+            .then(function(categories) {
+                console.dir(categories, {depth: null})
+                let blankRecord = {voteDay: '', steemstem: 0.00, steemmakers: 0.00, mspwaves: 0.00,
+                                            development: 0.00, analysis: 0.00, translations: 0.00, tutorials: 0.00, 'video-tutorials': 0.00,
+                                            'bug-hunting': 0.00, ideas: 0.00, graphics: 0.00, blog: 0.00, documentation: 0.00, copywriting: 0.00, antiabuse: 0.00,
+                                            comments: 0.00, other: 0.00};
+
+                for (let category of categories) {
+                    let utopianPosition = utopianResults.findIndex(fI => fI.voteDay == category._id.voteDay);
+                    let record = JSON.parse(JSON.stringify(blankRecord));
+                    if (utopianPosition == -1) {
+                        utopianResults.push(record)
+                        utopianPosition = utopianResults.length - 1;
+                    }
+
+                    record.voteDay = category._id.voteDay;
+                    if (category._id.steemstem == true) {
+                        utopianResults[utopianPosition].steemstem = Number(category.percent.toFixed(2));
+                    } else if (category._id.steemmakers == true) {
+                        utopianResults[utopianPosition].steemmakers = Number(category.percent.toFixed(2));
+                    } else if (category._id.mspwaves == true) {
+                        utopianResults[utopianPosition].mspwaves = Number(category.percent.toFixed(2));
+                    } else if (category._id.postComment == 1) {
+                        utopianResults[utopianPosition].comments = Number(category.percent.toFixed(2));
+                    } else if (category._id.contribution == 'idea') {
+                        utopianResults[utopianPosition].ideas = Number(category.percent.toFixed(2));
+                    } else if (category._id.contribution != false) {
+                        utopianResults[utopianPosition][category._id.contribution] = Number(category.percent.toFixed(2));
+                    } else {
+                        utopianResults[utopianPosition].other = Number(category.percent.toFixed(2));
+                    }
+                    console.log(utopianResults[utopianPosition])
+                }
+            });
+    return utopianResults;
+}
+
+module.exports.utopianVotesMongo = utopianVotesMongo;
+
+
+
+// Utopian analysis: grouping by authors
+// -------------------------------------
+async function utopianAuthorsMongo(db, openBlock, closeBlock) {
+
+    return await db.collection('comments').aggregate([
+            { $match :
+                    { "curators.voter": 'utopian-io'}},
+            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, category: 1}},
+            { $unwind : "$curators" },
+            { $match : { $and :[
+                { "curators.voter": 'utopian-io'},
+                { "curators.vote_blockNumber": { $gte: openBlock, $lt: closeBlock }},
+              ]}},
+            { $group: {_id : { author: "$author"},
+                                percent: { $sum: "$curators.percent"},
+                                count: { $sum: 1}
+                              }},
+            { $sort: {percent: -1}},
+            ])
+            .toArray()
+}
+
+module.exports.utopianAuthorsMongo = utopianAuthorsMongo;
+
+
+
+// Summary of transfers in and out for Account
+// --------------------------------------------
+async function bidbotTransfersMongo(db, openBlock, closeBlock, accountArray) {
+    console.log('Matching transfers to votes', accountArray)
+    return await db.collection('transfers').aggregate([
+            { $match :
+                    { $or: [
+                        { from: { $in: accountArray}},
+                        { to:{ $in: accountArray}},
+                    ]}},
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+            { $match : { currency: 'SBD' }},
+
+            { $project: {_id: 0, from: 1, to: 1, amount: 1, currency: 1, timestamp: 1, memo: 1 }},
+            { $sort: {timestamp: 1}}
+            ])
+            .toArray()
+}
+
+module.exports.bidbotTransfersMongo = bidbotTransfersMongo;
+
+
+
+// Summary of vote values at vote and payout
+// --------------------------------------------
+async function bidbotVoteValuesMongo(db, localAuthor, localPermlink, localBot) {
+
+    return db.collection('comments').aggregate([
+          { $match : { author: localAuthor, permlink: localPermlink, "curators.voter": localBot }},
+          { $unwind : "$curators" },
+          { $match : { "curators.voter": localBot, "curators.vote_blockNumber": { $exists: true }, operations: 'author_reward'}},
+          { $project : {  _id: 0, author: 1, permlink: 1, curators: 1, operations: 1,
+                          voteDateHour: {$substr: ["$curators.vote_timestamp", 0, 13]},
+                          payoutDateHour: {$substr: ["$curators.reward_timestamp", 0, 13]},
+                        }},
+          { $lookup : {   from: "prices",
+                          localField: "voteDateHour",
+                          foreignField: "_id",
+                          as: "curator_vote_prices"   }},
+          { $lookup : {   from: "prices",
+                          localField: "payoutDateHour",
+                          foreignField: "_id",
+                          as: "curator_payout_prices"   }},
+          { $project : {  _id: 0, author: 1, permlink: 1, curators: 1, voteDateHour: 1, payoutDateHour: 1, operations: 1,
+                          "curator_vote_prices": { "$arrayElemAt": [ "$curator_vote_prices", 0 ]},
+                          "curator_payout_prices": { "$arrayElemAt": [ "$curator_payout_prices", 0 ]},
+                        }},
+          { $project : {  _id: 0, author: 1, permlink: 1, curators: 1, voteDateHour: 1, payoutDateHour: 1, operations: 1,
+                            voteDate_value: { $divide: [ "$curators.rshares", "$curator_vote_prices.rsharesPerSTU" ]},
+                            votePayout_value: { $divide: [ "$curators.rshares", "$curator_payout_prices.rsharesPerSTU" ]},
+                          }},
+          ])
+          .toArray()
+}
+
+module.exports.bidbotVoteValuesMongo = bidbotVoteValuesMongo;
+
+
+
+// Summary of transfers in and out for Account
+// --------------------------------------------
+async function transferSummaryMongo(db, openBlock, closeBlock, localAccount) {
+    console.log('Summarising all transfers to and from', localAccount)
+    return await db.collection('transfers').aggregate([
+            { $match :
+                    { $or: [
+                        { from: localAccount},
+                        { to: localAccount},
+                    ]}},
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+
+            { $project: {_id: 0, from: 1, to: 1, amount: 1, currency: 1, timestamp: 1,
+                          party: {$cond: { if: { $eq: [ localAccount, "$to" ]}, then: "$from", else: "$to" }},
+                        }},
+            { $facet: {
+                "party": [
+                    { $sort: {party: 1, timestamp: 1}}
+                ],
+                "time": [
+                    { $sort: {timestamp: 1}}
+                ],}}
+          ])
+            .toArray()
+}
+
+module.exports.transferSummaryMongo = transferSummaryMongo;
+
+
+
+// Summary of delegations for Account
+// --------------------------------------------
+async function delegationSummaryMongo(db, openBlock, closeBlock, localAccount) {
+    console.log('Summarising all delegation of', localAccount)
+    return await db.collection('delegation').aggregate([
+            { $match :
+                    { $or: [
+                        { delegator: localAccount},
+                        { delegatee: localAccount},
+                    ]}},
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+
+            { $project: {_id: 0, delegator: 1, delegatee: 1, vesting_shares: 1, type: 1, timestamp: 1, blockNumber: 1, transactionNumber: 1, operationNumber: 1, virtualOp: 1,
+                          dateHour: {$substr: ["$timestamp", 0, 13]}}},
+            { $lookup : {   from: "prices",
+                            localField: "dateHour",
+                            foreignField: "_id",
+                            as: "payout_prices"   }},
+            { $project : {  _id: 0, delegator: 1, delegatee: 1, vesting_shares: 1, type: 1, timestamp: 1, blockNumber: 1, transactionNumber: 1, operationNumber: 1, virtualOp: 1,
+                            "payout_prices": { "$arrayElemAt": [ "$payout_prices", 0 ]}}},
+            { $project : {  _id: 0, delegator: 1, delegatee: 1, vesting_shares: 1, type: 1, timestamp: 1, blockNumber: 1, transactionNumber: 1, operationNumber: 1, virtualOp: 1,
+                                  vesting_shares_STU: { $multiply: [ "$vesting_shares", "$payout_prices.STUPerVests" ]}}}
+            ])
+            .toArray()
+}
+
+module.exports.delegationSummaryMongo = delegationSummaryMongo;
 
 
 

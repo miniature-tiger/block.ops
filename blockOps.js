@@ -25,7 +25,7 @@ const postprocessing = require('./postprocessing.js')
 // -------
 const MongoClient = mongodb.MongoClient;
 const url = 'mongodb://localhost:27017';
-const dbName = 'blockOps2';
+const dbName = 'blockOps3';
 
 
 // Command Line inputs and parameters
@@ -73,6 +73,14 @@ if (commandLine == 'setup') {
     showBlock();
 } else if (commandLine == 'votetiming') {
     voteTiming();
+} else if (commandLine == 'utopianvotes') {
+    utopianVotes();
+} else if (commandLine == 'bidbotprofit') {
+    bidbotProfitability();
+} else if (commandLine == 'transfersummary') {
+    transferSummary();
+} else if (commandLine == 'delegationsummary') {
+    delegationSummary();
 } else {
     // end
 }
@@ -263,10 +271,22 @@ async function fillOperations() {
     if (checkCo == false) {
         db.collection('comments').createIndex({author: 1, permlink: 1}, {unique:true});
     }
-    let checkCb = await mongoblock.checkCollectionExists(db, 'blocksProcessed');
-    if (checkCb == false) {
+    db.collection('transfers').createIndex({blockNumber: 1, from: 1, to: 1}, {unique:true});
+    let checkTr = await mongoblock.checkCollectionExists(db, 'transfers');
+    if (checkTr == false) {
+        db.collection('transfers').createIndex({blockNumber: 1, from: 1, to: 1}, {unique:true});
+    }
+
+    let checkDg = await mongoblock.checkCollectionExists(db, 'delegation');
+    if (checkDg == false) {
+        db.collection('delegation').createIndex({blockNumber: 1, delegator: 1, delegatee: 1}, {unique:true});
+    }
+    let checkBp = await mongoblock.checkCollectionExists(db, 'blocksProcessed');
+    if (checkBp == false) {
         db.collection('blocksProcessed').createIndex({blockNumber: 1}, {unique:true});
     }
+
+
 
     let blocksStarted = 0;
     let blocksCompleted = 0;
@@ -388,10 +408,16 @@ async function fillOperations() {
 
                     // Main loop for controlling processing of operations
                     if (skipFlag == false) {
+                        // Transaction operations
                         if (operation.op[0] == 'comment') {
                             mongoblock.processComment(operation, operationNumber, mongoblock.mongoComment, db);
                         } else if (operation.op[0] == 'vote') {
                             mongoblock.processVote(operation, operationNumber, mongoblock.mongoVote, db);
+                        } else if (operation.op[0] == 'transfer') {
+                            mongoblock.processTransfer(operation, operationNumber, mongoblock.mongoTransfer, db);
+                        } else if (operation.op[0] == 'delegate_vesting_shares') {
+                            mongoblock.processDelegation(operation, operationNumber, mongoblock.mongoDelegation, db);
+                        // Virtual operations
                         } else if (operation.op[0] == 'author_reward') {
                             mongoblock.validateComments(db, operation);
                             activeVotes(operation, db);
@@ -401,7 +427,7 @@ async function fillOperations() {
                         } else if (operation.op[0] == 'curation_reward') {
                             mongoblock.processCuratorReward(operation, mongoblock.mongoCuratorReward, db);
                         } else {
-                            // Operations not handled:
+                        // Operations not handled:
                             opsNotHandled += 1;
                             if (!unknownVirtuals.includes(operation.op[0])) {
                                 unknownVirtuals.push(operation.op[0]);
@@ -457,6 +483,7 @@ async function fillOperations() {
         console.log('Blocks previously processed: ' + blocksOK);
         console.log('Error Count: ' + errorCount);
         console.log('Average speed: ' + (runTime/blocksCompleted/1000).toFixed(4) + 's.');
+        console.log(unknownVirtuals);
         //console.log('db closing');
         //client.close();
     }
@@ -1111,4 +1138,131 @@ async function postCuration() {
     } else {
         console.log('Parameter issue');
     }
+}
+
+
+
+// Utopian votes analysis
+// --------------------------------
+async function utopianVotes() {
+    let utopianVoteSplitByDay = [];
+
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        utopianVoteSplitByDay = await mongoblock.utopianVotesMongo(db, openBlock, closeBlock);
+        const fieldNames = ['voteDay', 'steemstem', 'steemmakers', 'mspwaves', 'comments', 'other',
+                                    'development', 'analysis', 'translations', 'tutorials', 'video-tutorials',
+                                    'bug-hunting', 'ideas', 'graphics', 'blog', 'documentation', 'copywriting', 'antiabuse'];
+        postprocessing.dataExport(utopianVoteSplitByDay.slice(0), 'utopianVoteSplitByDay', fieldNames);
+
+    let utopianAuthors = await mongoblock.utopianAuthorsMongo(db, openBlock, closeBlock);
+    const fieldNames2 = ['_id.author', 'percent', 'count'];
+    postprocessing.dataExport(utopianAuthors.slice(0), 'utopianAuthors', fieldNames2);
+
+    } else {
+        console.log('Parameter issue');
+    }
+
+    console.log('closing mongo db');
+    client.close();
+}
+
+
+
+// Bidbot profitability analysis
+// --------------------------------
+async function bidbotProfitability() {
+
+    let botsIncArray = [ "appreciator", "boomerang", "booster", "buildawhale", "postpromoter", "rocky1", "smartsteem", "upme" ]
+    let bidbotTransferArray = [];
+    let bidbotOutput = [];
+    let counter = 0;
+
+    // Connects to MongoDB
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    // Defines and validates parameters
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+
+        // Obtains all transfers to and from listed bidbots in date range
+        bidbotTransferArray = await mongoblock.bidbotTransfersMongo(db, openBlock, closeBlock, botsIncArray);
+
+        // Parses transfer memo and obtains bidbot vote values from comments collection based on author/permlink
+        for (let transfer of bidbotTransferArray) {
+            if (transfer.memo.includes("/@")) {
+                let url = transfer.memo.substr(transfer.memo.indexOf("/@")+2, transfer.memo.length - (transfer.memo.indexOf("/@")+2));
+                let [urlAccount, urlPermlink] = url.split("/");
+                let urlPostVote = await mongoblock.bidbotVoteValuesMongo(db, urlAccount, urlPermlink, transfer.to);
+                if (urlPostVote.length > 0) {
+                    let voteValueVoting = Number((urlPostVote[0].voteDate_value * 0.75).toFixed(3));
+                    let voteValuePayout = Number((urlPostVote[0].votePayout_value * 0.75).toFixed(3));
+                    bidbotOutput.push({bidbot: transfer.to, author: urlPostVote[0].author, transfer: transfer.amount, voteValueVoting: voteValueVoting, voteValuePayout: voteValuePayout, voteTimestamp: urlPostVote[0].curators.vote_timestamp, voteDateHour: urlPostVote[0].voteDateHour, payoutDateHour: urlPostVote[0].payoutDateHour })
+                    counter += 1;
+                }
+            }
+        }
+        console.log(counter);
+
+        // Output to csv file
+        const fieldNames = ['bidbot', 'author', 'transfer', 'voteValueVoting', 'voteValuePayout', 'voteTimestamp', 'voteDateHour', 'payoutDateHour']
+        postprocessing.dataExport(bidbotOutput.slice(0), 'bidbotAnalysis', fieldNames);
+
+    } else {
+        console.log('Parameter issue');
+    }
+    console.log('closing mongo db');
+    client.close();
+}
+
+
+
+// Summaries of transfers
+// --------------------------------
+async function transferSummary() {
+    let transferArray = [];
+
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        transferArray = await mongoblock.transferSummaryMongo(db, openBlock, closeBlock, parameter3);
+        console.dir(transferArray, {depth: null})
+    } else {
+        console.log('Parameter issue');
+    }
+
+console.log('closing mongo db');
+client.close();
+}
+
+
+
+// Summaries of delegations
+// --------------------------------
+async function delegationSummary() {
+    let delegationArray = [];
+
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        delegationArray = await mongoblock.delegationSummaryMongo(db, openBlock, closeBlock, parameter3);
+        console.dir(delegationArray, {depth: null})
+    } else {
+        console.log('Parameter issue');
+    }
+
+console.log('closing mongo db');
+client.close();
 }
