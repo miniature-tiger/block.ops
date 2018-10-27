@@ -532,7 +532,7 @@ module.exports.processTransfer = processTransfer;
 function mongoTransfer(db, localRecord, reattempt) {
     let maxReattempts = 1;
     let logTransfer = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: 'transfer', count: 1, status: 'OK'};
-        db.collection('transfers').updateOne({ blockNumber: localRecord.blockNumber, from: localRecord.from, to: localRecord.to}, { $set: localRecord }, {upsert: true})
+        db.collection('transfers').updateOne({ blockNumber: localRecord.blockNumber, transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, from: localRecord.from, to: localRecord.to}, { $set: localRecord }, {upsert: true})
             .then(function(response) {
                 mongoOperationProcessed(db, localRecord.blockNumber, logTransfer, 1, 0);
             })
@@ -1916,6 +1916,7 @@ module.exports.utopianAuthorsMongo = utopianAuthorsMongo;
 // --------------------------------------------
 async function bidbotTransfersMongo(db, openBlock, closeBlock, accountArray) {
     console.log('Matching transfers to votes', accountArray)
+
     return await db.collection('transfers').aggregate([
             { $match :
                     { $or: [
@@ -1974,6 +1975,7 @@ module.exports.bidbotVoteValuesMongo = bidbotVoteValuesMongo;
 // Summary of transfers in and out for Account
 // --------------------------------------------
 async function transferSummaryMongo(db, openBlock, closeBlock, localAccount) {
+
     console.log('Summarising all transfers to and from', localAccount)
     return await db.collection('transfers').aggregate([
             { $match :
@@ -1993,7 +1995,7 @@ async function transferSummaryMongo(db, openBlock, closeBlock, localAccount) {
                 "time": [
                     { $sort: {timestamp: 1}}
                 ],}}
-          ])
+            ])
             .toArray()
 }
 

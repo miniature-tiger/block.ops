@@ -271,10 +271,10 @@ async function fillOperations() {
     if (checkCo == false) {
         db.collection('comments').createIndex({author: 1, permlink: 1}, {unique:true});
     }
-    db.collection('transfers').createIndex({blockNumber: 1, from: 1, to: 1}, {unique:true});
+    
     let checkTr = await mongoblock.checkCollectionExists(db, 'transfers');
     if (checkTr == false) {
-        db.collection('transfers').createIndex({blockNumber: 1, from: 1, to: 1}, {unique:true});
+        db.collection('transfers').createIndex({blockNumber: 1, from: 1, to: 1, transactionNumber: 1, operationNumber: 1}, {unique:true});
     }
 
     let checkDg = await mongoblock.checkCollectionExists(db, 'delegation');
