@@ -516,11 +516,11 @@ module.exports.mongoCuratorReward = mongoCuratorReward;
 
 // Transfer - processing of block operation
 // ---------------------------------------------
-function processTransfer(localOperation, localOperationNumber, mongoVote, db) {
+function processTransfer(localOperation, localOperationNumber, mongoTransfer, db) {
     let [transferAmount, transferCurrency] = localOperation.op[1].amount.split(' ');
     transferAmount = Number(transferAmount);
     let transferRecord = {blockNumber: localOperation.block, from: localOperation.op[1].from, to: localOperation.op[1].to, amount: transferAmount, currency: transferCurrency, memo: localOperation.op[1].memo, timestamp: new Date(localOperation.timestamp + '.000Z'), transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber};
-    mongoVote(db, transferRecord, 0);
+    mongoTransfer(db, transferRecord, 0);
 }
 
 module.exports.processTransfer = processTransfer;
@@ -592,6 +592,80 @@ function mongoDelegation(db, localRecord, reattempt) {
 }
 
 module.exports.mongoDelegation = mongoDelegation;
+
+
+
+// Account creation - processing of block operations
+// -------------------------------------------------
+function processAccountCreation(localOperation, localOperationNumber, mongoAccountCreation, db) {
+    let accountCreationRecord = {};
+    let feeAmount = 0;
+    let feeCurrency = '';
+    let delegationAmount = 0;
+    let delegationCurrency = '';
+    if (localOperation.op[0] == 'account_create') {
+        [feeAmount, feeCurrency] = localOperation.op[1].fee.split(' ');
+        feeAmount = Number(Number(feeAmount).toFixed(3));
+        accountCreationRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                                  type: 'account_create', creator: localOperation.op[1].creator, account: localOperation.op[1].new_account_name,
+                                  feeAmount: feeAmount, feeCurrency: feeCurrency, delegationAmount: delegationAmount, delegationCurrency: delegationCurrency,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+    } else if (localOperation.op[0] == 'account_create_with_delegation') {
+        [feeAmount, feeCurrency] = localOperation.op[1].fee.split(' ');
+        feeAmount = Number(Number(feeAmount).toFixed(3));
+        [delegationAmount, delegationCurrency] = localOperation.op[1].delegation.split(' ');
+        delegationAmount = Number(Number(delegationAmount).toFixed(6));
+        accountCreationRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                                  type: 'account_create_with_delegation', creator: localOperation.op[1].creator, account: localOperation.op[1].new_account_name,
+                                  feeAmount: feeAmount, feeCurrency: feeCurrency, delegationAmount: delegationAmount, delegationCurrency: delegationCurrency,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+    } else if (localOperation.op[0] == 'claim_account') {
+        [feeAmount, feeCurrency] = localOperation.op[1].fee.split(' ');
+        feeAmount = Number(Number(feeAmount).toFixed(3));
+        accountCreationRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                                  type: 'claim_account', creator: localOperation.op[1].creator, account: '',
+                                  feeAmount: feeAmount, feeCurrency: feeCurrency, delegationAmount: delegationAmount, delegationCurrency: delegationCurrency,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+    } else if (localOperation.op[0] == 'create_claimed_account') {
+        accountCreationRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                                  type: 'create_claimed_account', creator: localOperation.op[1].creator, account: localOperation.op[1].new_account_name,
+                                  feeAmount: feeAmount, feeCurrency: feeCurrency, delegationAmount: delegationAmount, delegationCurrency: delegationCurrency,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+    } else {
+        // Catchall
+    }
+    mongoAccountCreation(db, accountCreationRecord, 0);
+}
+
+module.exports.processAccountCreation = processAccountCreation;
+
+
+
+// Account creation - update of mongo record
+// -----------------------------------------------
+function mongoAccountCreation(db, localRecord, reattempt) {
+    let maxReattempts = 1;
+    let logAccountCreation = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: localRecord.type, count: 1, status: 'OK'};
+        db.collection('createAccounts').updateOne({ blockNumber: localRecord.blockNumber, creator: localRecord.creator, account: localRecord.account, transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber}, { $set: localRecord }, {upsert: true})
+            .then(function(response) {
+                mongoOperationProcessed(db, localRecord.blockNumber, logAccountCreation, 1, 0);
+            })
+            .catch(function(error) {
+                if(error.code == 11000) {
+                    if (reattempt < maxReattempts) {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoAccountCreation. Re-attempting...');
+                        mongoAccountCreation(db, localRecord, reattempt + 1);
+                    } else {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoAccountCreation. Maximum reattempts surpassed.');
+                    }
+                } else {
+                    console.log('Non-standard error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoAccountCreation.');
+                    console.log(error);
+                }
+            });
+}
+
+module.exports.mongoAccountCreation = mongoAccountCreation;
 
 
 
@@ -1975,8 +2049,8 @@ module.exports.bidbotVoteValuesMongo = bidbotVoteValuesMongo;
 // Summary of transfers in and out for Account
 // --------------------------------------------
 async function transferSummaryMongo(db, openBlock, closeBlock, localAccount) {
-
     console.log('Summarising all transfers to and from', localAccount)
+
     return await db.collection('transfers').aggregate([
             { $match :
                     { $or: [
@@ -2030,6 +2104,49 @@ async function delegationSummaryMongo(db, openBlock, closeBlock, localAccount) {
 }
 
 module.exports.delegationSummaryMongo = delegationSummaryMongo;
+
+
+
+// Summary of delegations for Account
+// --------------------------------------------
+async function accountCreationSummaryMongo(db, openBlock, closeBlock) {
+    console.log('Summarising all accounts claimed or created with or without delegation.')
+    return await db.collection('createAccounts').aggregate([
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+            { $project: {_id: 0, creator: 1, account: 1, type: 1, feeAmount: 1, feeCurrency: 1, delegationAmount: 1, delegationCurrency: 1,
+                          dateHour: {$substr: ["$timestamp", 0, 13]},
+                          HF20: {$cond: { if: { $gt: [ "$timestamp", new Date('2018-09-25T15:00:00.000Z')] }, then: "HF20", else: "preHF20" }},
+                        }},
+            { $lookup : {   from: "prices",
+                            localField: "dateHour",
+                            foreignField: "_id",
+                            as: "payout_prices"   }},
+            { $project : {  _id: 0, creator: 1, account: 1, type: 1, feeAmount: 1, feeCurrency: 1, delegationAmount: 1, delegationCurrency: 1, dateHour: 1, HF20: 1,
+                            "payout_prices": { "$arrayElemAt": [ "$payout_prices", 0 ]}}},
+            { $project : {  _id: 0, creator: 1, account: 1, type: 1, feeAmount: 1, feeCurrency: 1, delegationAmount: 1, delegationCurrency: 1, dateHour: 1, HF20: 1,
+                                  delegationAmount_STU: { $multiply: [ "$delegationAmount", "$payout_prices.STUPerVests" ]}}},
+            { $facet: {
+                "time": [
+                    { $group: {_id : { dateHour: "$dateHour", type: "$type"},
+                                        feeAmount: { $sum: "$feeAmount"},
+                                        delegationAmount_STU: { $sum: "$delegationAmount_STU"},
+                                        count: { $sum: 1}
+                                      }},
+                    { $sort: {"_id.dateHour": 1, "_id.type": 1}}
+                ],
+                "creator": [
+                    { $group: {_id : { creator: "$creator", HF20: "$HF20"},
+                                        feeAmount: { $sum: "$feeAmount"},
+                                        delegationAmount_STU: { $sum: "$delegationAmount_STU"},
+                                        count: { $sum: 1}
+                                      }},
+                    { $sort: {count: -1}}
+                ],}}
+            ])
+            .toArray()
+}
+
+module.exports.accountCreationSummaryMongo = accountCreationSummaryMongo;
 
 
 

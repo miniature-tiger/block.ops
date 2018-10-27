@@ -81,6 +81,8 @@ if (commandLine == 'setup') {
     transferSummary();
 } else if (commandLine == 'delegationsummary') {
     delegationSummary();
+} else if (commandLine == 'creationsummary') {
+    accountCreationSummary();
 } else {
     // end
 }
@@ -271,7 +273,7 @@ async function fillOperations() {
     if (checkCo == false) {
         db.collection('comments').createIndex({author: 1, permlink: 1}, {unique:true});
     }
-    
+
     let checkTr = await mongoblock.checkCollectionExists(db, 'transfers');
     if (checkTr == false) {
         db.collection('transfers').createIndex({blockNumber: 1, from: 1, to: 1, transactionNumber: 1, operationNumber: 1}, {unique:true});
@@ -281,6 +283,12 @@ async function fillOperations() {
     if (checkDg == false) {
         db.collection('delegation').createIndex({blockNumber: 1, delegator: 1, delegatee: 1}, {unique:true});
     }
+
+    let checkCa = await mongoblock.checkCollectionExists(db, 'createAccounts');
+    if (checkCa == false) {
+        db.collection('createAccounts').createIndex({blockNumber: 1, creator: 1, account: 1, transactionNumber: 1, operationNumber: 1}, {unique:true});
+    }
+
     let checkBp = await mongoblock.checkCollectionExists(db, 'blocksProcessed');
     if (checkBp == false) {
         db.collection('blocksProcessed').createIndex({blockNumber: 1}, {unique:true});
@@ -417,6 +425,14 @@ async function fillOperations() {
                             mongoblock.processTransfer(operation, operationNumber, mongoblock.mongoTransfer, db);
                         } else if (operation.op[0] == 'delegate_vesting_shares') {
                             mongoblock.processDelegation(operation, operationNumber, mongoblock.mongoDelegation, db);
+                        } else if (operation.op[0] == 'account_create') {
+                            mongoblock.processAccountCreation(operation, operationNumber, mongoblock.mongoAccountCreation, db);
+                        } else if (operation.op[0] == 'account_create_with_delegation') {
+                            mongoblock.processAccountCreation(operation, operationNumber, mongoblock.mongoAccountCreation, db);
+                        } else if (operation.op[0] == 'claim_account') {
+                            mongoblock.processAccountCreation(operation, operationNumber, mongoblock.mongoAccountCreation, db);
+                        } else if (operation.op[0] == 'create_claimed_account') {
+                            mongoblock.processAccountCreation(operation, operationNumber, mongoblock.mongoAccountCreation, db);
                         // Virtual operations
                         } else if (operation.op[0] == 'author_reward') {
                             mongoblock.validateComments(db, operation);
@@ -1240,8 +1256,8 @@ async function transferSummary() {
         console.log('Parameter issue');
     }
 
-console.log('closing mongo db');
-client.close();
+    console.log('closing mongo db');
+    client.close();
 }
 
 
@@ -1263,6 +1279,35 @@ async function delegationSummary() {
         console.log('Parameter issue');
     }
 
-console.log('closing mongo db');
-client.close();
+    console.log('closing mongo db');
+    client.close();
+}
+
+
+
+// Summaries of account creation
+// --------------------------------
+async function accountCreationSummary() {
+    let accountCreationArray = [];
+
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        accountCreationArray = await mongoblock.accountCreationSummaryMongo(db, openBlock, closeBlock);
+        let fieldNames = ['_id.dateHour', '_id.type', '_id.creator', '_id.HF20', 'feeAmount', 'count']
+        // Output to csv file
+        Object.keys(accountCreationArray[0]).forEach(function(summary) {
+              console.log(summary);
+              console.dir(accountCreationArray[0][summary], {depth: null})
+              postprocessing.dataExport(accountCreationArray[0][summary].slice(0), summary, fieldNames);
+        })
+    } else {
+        console.log('Parameter issue');
+    }
+
+    console.log('closing mongo db');
+    client.close();
 }
