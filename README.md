@@ -80,15 +80,8 @@ Adding a user name returns only those votes from the individual user.
   
   To be included:
   'custom_json',
- 
-  'account_create',
-  'account_create_with_delegation',  
-  'claim_account',
-  'create_claimed_account'
-  
   
   For future consideration:
-  'return_vesting_delegation',
  
   'claim_reward_balance',
   'transfer_to_vesting',
@@ -96,16 +89,17 @@ Adding a user name returns only those votes from the individual user.
   'transfer_from_savings',
   'fill_transfer_from_savings',
   'cancel_transfer_from_savings'
+  'fill_vesting_withdraw',
+  'withdraw_vesting',
+  'set_withdraw_vesting_route',
+  
+   'return_vesting_delegation',
   
   'producer_reward',
   'account_witness_vote',
   'account_witness_proxy',
   'witness_set_properties',
   'witness_update',
-  
-  'fill_vesting_withdraw',
-  'withdraw_vesting',
-  'set_withdraw_vesting_route',
   
   'feed_publish',
   'comment_options',
@@ -116,13 +110,15 @@ Adding a user name returns only those votes from the individual user.
   'limit_order_create2',
   'fill_order',
   
+  'convert',
+  'fill_convert_request',
+  
   'delete_comment'
   
   'request_account_recovery',
   'recover_account',
   
-   'convert',
-   'fill_convert_request',
+   
   
 
 ### To be completed
