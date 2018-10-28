@@ -83,6 +83,8 @@ if (commandLine == 'setup') {
     delegationSummary();
 } else if (commandLine == 'creationsummary') {
     accountCreationSummary();
+} else if (commandLine == 'followsummary') {
+    followSummary();
 } else {
     // end
 }
@@ -289,6 +291,11 @@ async function fillOperations() {
         db.collection('createAccounts').createIndex({blockNumber: 1, creator: 1, account: 1, transactionNumber: 1, operationNumber: 1}, {unique:true});
     }
 
+    let checkFo = await mongoblock.checkCollectionExists(db, 'follows');
+    if (checkFo == false) {
+        db.collection('follows').createIndex({blockNumber: 1, transactionNumber: 1, operationNumber: 1, following: 1 }, {unique:true});
+    }
+
     let checkBp = await mongoblock.checkCollectionExists(db, 'blocksProcessed');
     if (checkBp == false) {
         db.collection('blocksProcessed').createIndex({blockNumber: 1}, {unique:true});
@@ -433,6 +440,12 @@ async function fillOperations() {
                             mongoblock.processAccountCreation(operation, operationNumber, mongoblock.mongoAccountCreation, db);
                         } else if (operation.op[0] == 'create_claimed_account') {
                             mongoblock.processAccountCreation(operation, operationNumber, mongoblock.mongoAccountCreation, db);
+                        } else if (operation.op[0] == 'custom_json') {
+                            if (operation.op[1].id == 'follow') {
+                                  mongoblock.processFollows(operation, operationNumber, mongoblock.mongoFollows, db);
+                            } else {
+                                opsNotHandled += 1;
+                            }
                         // Virtual operations
                         } else if (operation.op[0] == 'author_reward') {
                             mongoblock.validateComments(db, operation);
@@ -1304,6 +1317,29 @@ async function accountCreationSummary() {
               console.dir(accountCreationArray[0][summary], {depth: null})
               postprocessing.dataExport(accountCreationArray[0][summary].slice(0), summary, fieldNames);
         })
+    } else {
+        console.log('Parameter issue');
+    }
+
+    console.log('closing mongo db');
+    client.close();
+}
+
+
+
+// Summaries of account creation
+// --------------------------------
+async function followSummary() {
+    let followsArray = [];
+
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        followsArray = await mongoblock.followSummaryMongo(db, openBlock, closeBlock, parameter3);
+        console.dir(followsArray, {depth: null})
     } else {
         console.log('Parameter issue');
     }

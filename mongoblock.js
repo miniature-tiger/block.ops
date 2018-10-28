@@ -669,6 +669,64 @@ module.exports.mongoAccountCreation = mongoAccountCreation;
 
 
 
+// Follows and reblogs - processing of block operations
+// -------------------------------------------------
+function processFollows(localOperation, localOperationNumber, mongoFollows, db) {
+    let followsRecord = {};
+    let jsonInfo = JSON.parse(localOperation.op[1].json);
+
+    if (jsonInfo[0] == 'follow') {
+        if (jsonInfo[1].what.length == 0) {
+            followsRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                                  type: 'unfollow', follower: jsonInfo[1].follower, following: jsonInfo[1].following, what: jsonInfo[1].what,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+        } else {
+            followsRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                                  type: 'follow', follower: jsonInfo[1].follower, following: jsonInfo[1].following, what: jsonInfo[1].what,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+        }
+    } else if (jsonInfo[0] == 'reblog') {
+        followsRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                              type: 'reblog', follower: localOperation.op[1].required_posting_auths[0], following: jsonInfo[1].author, what: jsonInfo[1].permlink,
+                              timestamp: new Date(localOperation.timestamp + '.000Z') };
+    } else {
+        // Catchall
+    }
+    mongoFollows(db, followsRecord, 0);
+}
+
+module.exports.processFollows = processFollows;
+
+
+
+// Follows and reblogs - update of mongo record
+// -----------------------------------------------
+function mongoFollows(db, localRecord, reattempt) {
+    let maxReattempts = 1;
+    let logFollows = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: localRecord.type, count: 1, status: 'OK'};
+        db.collection('follows').updateOne({ blockNumber: localRecord.blockNumber, type: localRecord.type, follower: localRecord.follower, following: localRecord.following, transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber}, { $set: localRecord }, {upsert: true})
+            .then(function(response) {
+                mongoOperationProcessed(db, localRecord.blockNumber, logFollows, 1, 0);
+            })
+            .catch(function(error) {
+                if(error.code == 11000) {
+                    if (reattempt < maxReattempts) {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoFollows. Re-attempting...');
+                        mongoFollows(db, localRecord, reattempt + 1);
+                    } else {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoFollows. Maximum reattempts surpassed.');
+                    }
+                } else {
+                    console.log('Non-standard error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoFollows.');
+                    console.log(error);
+                }
+            });
+}
+
+module.exports.mongoFollows = mongoFollows;
+
+
+
 // Initialisation of blocksProcessed documents for each block and handling of reprocessed blocks
 // ---------------------------------------------------------------------------------------------
 function mongoBlockProcessed(db, localBlockRecord, reattempt) {
@@ -2147,6 +2205,42 @@ async function accountCreationSummaryMongo(db, openBlock, closeBlock) {
 }
 
 module.exports.accountCreationSummaryMongo = accountCreationSummaryMongo;
+
+
+
+// Summary of follows / reblogs
+// --------------------------------------------
+async function followSummaryMongo(db, openBlock, closeBlock, localAccount) {
+    console.log('Summarising all follows / reblogs.')
+    return await db.collection('follows').aggregate([
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+
+            { $project: {_id: 0, type: 1, follower: 1, following: 1, what: 1,
+                            dateHour: {$substr: ["$timestamp", 0, 13]}}},
+            { $facet: {
+                "follows": [
+                    { $match : { type: 'follow' }},
+                    { $group: {_id : { type: "$type", following: "$following", what: "$what"},
+                                        count: { $sum: 1}}},
+                    { $sort: {count: -1}}
+                ],
+                "reblogs": [
+                    { $match : { type: 'reblog' }},
+                    { $group: {_id : { type: "$type", following: "$following", what: "$what"},
+                                        count: { $sum: 1}}},
+                    { $sort: {count: -1}}
+                ],
+                localAccount: [
+                    { $match : { following: localAccount }},
+                    { $group: {_id : { type: "$type", following: "$following", what: "$what"},
+                                        count: { $sum: 1}}},
+                    { $sort: {count: -1}}
+                ],}}
+            ])
+            .toArray()
+}
+
+module.exports.followSummaryMongo = followSummaryMongo;
 
 
 
