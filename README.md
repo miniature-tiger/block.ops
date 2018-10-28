@@ -79,21 +79,21 @@ Adding a user name returns only those votes from the individual user.
 * Consider other operations to be analysed from the list below:
   
   To be included:
-  'custom_json',
+  'withdraw_vesting',
+  'transfer_to_vesting',
+  'fill_vesting_withdraw',
   
   For future consideration:
  
   'claim_reward_balance',
-  'transfer_to_vesting',
+  
   'transfer_to_savings',
   'transfer_from_savings',
-  'fill_transfer_from_savings',
+  'fill_transfer_from_savings', // virtual operation that shows completion of transfers to / from savings after 3 days 
   'cancel_transfer_from_savings'
-  'fill_vesting_withdraw',
-  'withdraw_vesting',
-  'set_withdraw_vesting_route',
   
-   'return_vesting_delegation',
+  'set_withdraw_vesting_route',
+  'return_vesting_delegation',
   
   'producer_reward',
   'account_witness_vote',
