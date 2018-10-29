@@ -680,19 +680,24 @@ function processFollows(localOperation, localOperationNumber, mongoFollows, db) 
             followsRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
                                   type: 'unfollow', follower: jsonInfo[1].follower, following: jsonInfo[1].following, what: jsonInfo[1].what,
                                   timestamp: new Date(localOperation.timestamp + '.000Z') };
+            mongoFollows(db, followsRecord, 0);
         } else {
             followsRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
                                   type: 'follow', follower: jsonInfo[1].follower, following: jsonInfo[1].following, what: jsonInfo[1].what,
                                   timestamp: new Date(localOperation.timestamp + '.000Z') };
+            mongoFollows(db, followsRecord, 0);
         }
     } else if (jsonInfo[0] == 'reblog') {
         followsRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
                               type: 'reblog', follower: localOperation.op[1].required_posting_auths[0], following: jsonInfo[1].author, what: jsonInfo[1].permlink,
                               timestamp: new Date(localOperation.timestamp + '.000Z') };
+        mongoFollows(db, followsRecord, 0);
     } else {
         // Catchall
+        console.log('Error with jsonInfo. Operation skipped.');
+        console.dir(jsonInfo, {depth: null});
+        mongoOperationProcessed(db, localOperation.block, {transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: 'custom_json', count: 1, status: 'skipped'}, 1, 0);
     }
-    mongoFollows(db, followsRecord, 0);
 }
 
 module.exports.processFollows = processFollows;
@@ -724,6 +729,81 @@ function mongoFollows(db, localRecord, reattempt) {
 }
 
 module.exports.mongoFollows = mongoFollows;
+
+
+
+// Vesting - power up and power down - processing of block operations
+// -------------------------------------------------------------------
+function processVesting(localOperation, localOperationNumber, mongoVesting, db) {
+    let vestingRecord = {};
+    let logVesting = {};
+    let withdrawnAmount = 0;
+    let withdrawnCurrency = '';
+    let depositedAmount = 0;
+    let depositedCurrency = '';
+    if (localOperation.op[0] == 'transfer_to_vesting') {
+        // Power up
+        [depositedAmount, depositedCurrency] = localOperation.op[1].amount.split(' ');
+        depositedAmount = Number(Number(depositedAmount).toFixed(3));
+        vestingRecord =   { blockNumber: localOperation.block, referenceNumber: (localOperation.trx_in_block + '_' + localOperationNumber),
+                                  type: 'transfer_to_vesting', from: localOperation.op[1].from, to: localOperation.op[1].to,
+                                  depositedAmount: depositedAmount, depositedCurrency: depositedCurrency, withdrawnAmount: withdrawnAmount, withdrawnCurrency: withdrawnCurrency,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+        logVesting = { transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: 'transfer_to_vesting', count: 1, status: 'OK'};
+    } else if (localOperation.op[0] == 'withdraw_vesting') {
+        // Operation to start power down
+        [withdrawnAmount, withdrawnCurrency] = localOperation.op[1].vesting_shares.split(' ');
+        withdrawnAmount = Number(Number(withdrawnAmount).toFixed(6));
+        vestingRecord =   { blockNumber: localOperation.block, referenceNumber: (localOperation.trx_in_block + '_' + localOperationNumber),
+                                  type: 'withdraw_vesting', from: localOperation.op[1].account, to: '',
+                                  depositedAmount: depositedAmount, depositedCurrency: depositedCurrency, withdrawnAmount: withdrawnAmount, withdrawnCurrency: withdrawnCurrency,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+        logVesting = { transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: 'withdraw_vesting', count: 1, status: 'OK'};
+      } else if (localOperation.op[0] == 'fill_vesting_withdraw') {
+          // Virtual operation for weekly power down
+          [depositedAmount, depositedCurrency] = localOperation.op[1].deposited.split(' ');
+          depositedAmount = Number(Number(depositedAmount).toFixed(3));
+          [withdrawnAmount, withdrawnCurrency] = localOperation.op[1].withdrawn.split(' ');
+          withdrawnAmount = Number(Number(withdrawnAmount).toFixed(6));
+          vestingRecord =   { blockNumber: localOperation.block, referenceNumber: (localOperation.virtual_op + '_0'),
+                                    type: 'fill_vesting_withdraw', from: localOperation.op[1].from_account, to: localOperation.op[1].to_account,
+                                    depositedAmount: depositedAmount, depositedCurrency: depositedCurrency, withdrawnAmount: withdrawnAmount, withdrawnCurrency: withdrawnCurrency,
+                                    timestamp: new Date(localOperation.timestamp + '.000Z') };
+          logVesting = { virtualOp: localOperation.virtual_op, transactionType: 'fill_vesting_withdraw', count: 1, status: 'OK'};
+    } else {
+        // Catchall
+    }
+    mongoVesting(db, vestingRecord, logVesting, 0);
+}
+
+module.exports.processVesting = processVesting;
+
+
+
+//  Vesting - power up and power down - update of mongo record
+// -------------------------------------------------------------
+function mongoVesting(db, localRecord, localLog, reattempt) {
+    let maxReattempts = 1;
+        db.collection('vesting').updateOne({ blockNumber: localRecord.blockNumber, referenceNumber: localRecord.referenceNumber, type: localRecord.type, from: localRecord.from, to: localRecord.to}, { $set: localRecord }, {upsert: true})
+            .then(function(response) {
+                mongoOperationProcessed(db, localRecord.blockNumber, localLog, 1, 0);
+            })
+            .catch(function(error) {
+                if(error.code == 11000) {
+                    if (reattempt < maxReattempts) {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoVesting. Re-attempting...');
+                        mongoAccountCreation(db, localRecord, localLog, reattempt + 1);
+                    } else {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoVesting. Maximum reattempts surpassed.');
+                    }
+                } else {
+                    console.log('Non-standard error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoVesting.');
+                    console.log(error);
+                }
+            });
+}
+
+module.exports.mongoVesting = mongoVesting;
 
 
 

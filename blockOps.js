@@ -271,6 +271,7 @@ async function fillOperations() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
+    // Creating indexes if process is being run for the first time
     let checkCo = await mongoblock.checkCollectionExists(db, 'comments');
     if (checkCo == false) {
         db.collection('comments').createIndex({author: 1, permlink: 1}, {unique:true});
@@ -296,12 +297,15 @@ async function fillOperations() {
         db.collection('follows').createIndex({blockNumber: 1, transactionNumber: 1, operationNumber: 1, following: 1 }, {unique:true});
     }
 
+    let checkVe = await mongoblock.checkCollectionExists(db, 'vesting');
+    if (checkFo == false) {
+        db.collection('vesting').createIndex({blockNumber: 1, referenceNumber: 1, type: 1, from: 1, to: 1 }, {unique:true});
+    }
+
     let checkBp = await mongoblock.checkCollectionExists(db, 'blocksProcessed');
     if (checkBp == false) {
         db.collection('blocksProcessed').createIndex({blockNumber: 1}, {unique:true});
     }
-
-
 
     let blocksStarted = 0;
     let blocksCompleted = 0;
@@ -446,6 +450,10 @@ async function fillOperations() {
                             } else {
                                 opsNotHandled += 1;
                             }
+                        } else if (operation.op[0] == 'withdraw_vesting') { // Power down
+                            mongoblock.processVesting(operation, operationNumber, mongoblock.mongoVesting, db);
+                        } else if (operation.op[0] == 'transfer_to_vesting') { // Power up
+                            mongoblock.processVesting(operation, operationNumber, mongoblock.mongoVesting, db);
                         // Virtual operations
                         } else if (operation.op[0] == 'author_reward') {
                             mongoblock.validateComments(db, operation);
@@ -455,6 +463,8 @@ async function fillOperations() {
                             mongoblock.processBenefactorReward(operation, mongoblock.mongoBenefactorReward, db);
                         } else if (operation.op[0] == 'curation_reward') {
                             mongoblock.processCuratorReward(operation, mongoblock.mongoCuratorReward, db);
+                        } else if (operation.op[0] == 'fill_vesting_withdraw') { // Virtual Op - power down payment
+                            mongoblock.processVesting(operation, operationNumber, mongoblock.mongoVesting, db);
                         } else {
                         // Operations not handled:
                             opsNotHandled += 1;
