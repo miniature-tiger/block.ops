@@ -1185,6 +1185,7 @@ async function postCuration() {
 // --------------------------------
 async function utopianVotes() {
     let utopianVoteSplitByDay = [];
+    let utopianTimingArray = [];
 
     client = await MongoClient.connect(url, { useNewUrlParser: true });
     console.log('Connected to server.');
@@ -1192,15 +1193,14 @@ async function utopianVotes() {
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
-        utopianVoteSplitByDay = await mongoblock.utopianVotesMongo(db, openBlock, closeBlock);
-        const fieldNames = ['voteDay', 'steemstem', 'steemmakers', 'mspwaves', 'comments', 'other',
+        [utopianVoteSplitByDay, utopianTimingArray] = await mongoblock.utopianVotesMongo(db, openBlock, closeBlock);
+        const fieldNames = ['index', 'steemstem', 'steemmakers', 'mspwaves', 'moderatorComment', 'comments', 'other',
                                     'development', 'analysis', 'translations', 'tutorials', 'video-tutorials',
-                                    'bug-hunting', 'ideas', 'graphics', 'blog', 'documentation', 'copywriting', 'antiabuse'];
+                                    'bug-hunting', 'ideas', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'antiabuse'];
         postprocessing.dataExport(utopianVoteSplitByDay.slice(0), 'utopianVoteSplitByDay', fieldNames);
 
-    let utopianAuthors = await mongoblock.utopianAuthorsMongo(db, openBlock, closeBlock);
-    const fieldNames2 = ['_id.author', 'percent', 'count'];
-    postprocessing.dataExport(utopianAuthors.slice(0), 'utopianAuthors', fieldNames2);
+        const fieldNames2 = ['vote_time', 'vote_days', 'category'];
+        postprocessing.dataExport(utopianTimingArray.slice(0), 'utopianTiming', fieldNames2);
 
     } else {
         console.log('Parameter issue');

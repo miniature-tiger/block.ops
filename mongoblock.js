@@ -2018,27 +2018,30 @@ module.exports.voteTimingMongo = voteTimingMongo;
 // ------------------------------------------------------------------------------------------------------------------------------
 async function utopianVotesMongo(db, openBlock, closeBlock) {
     let utopianResults = [];
+    let timingResults = [];
     let voteAccount = 'utopian-io';
-    let contributionTypes = ['development', 'analysis', 'translations', 'tutorials', 'video-tutorials', 'bug-hunting', 'ideas', 'idea', 'graphics', 'blog', 'documentation', 'copywriting', 'antiabuse'];
+    let contributionTypes = ['development', 'analysis', 'translations', 'tutorials', 'video-tutorials', 'bug-hunting', 'ideas', 'idea', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'social', 'antiabuse'];
     let tagGroup = ['steemstem']
 
     await db.collection('comments').aggregate([
             { $match :
                     { "curators.voter": voteAccount}},
-            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, category: 1, tags: {$ifNull: [ "$tags", []]} }},
-            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, tags: 1, category: 1,
+            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, timestamp: 1, category: 1, tags: {$ifNull: [ "$tags", []]}, links: {$ifNull: [ "$links", []]} }},
+            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, timestamp: 1, tags: 1, category: 1,
                           type: {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 0]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 0]}, else:
                                 {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 1]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 1]}, else:
                                 {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 2]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 2]}, else:
                                 {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 3]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 3]}, else:
                                 {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 4]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 4]}, else: false
                               }}}}}}}}}},
+                          utopianTag: {$cond: { if: { $in: [ 'utopian-io', "$tags" ]}, then: true, else: false }},
                           steemstemVote: {$cond: { if: { $in: [ 'steemstem', "$curators.voter" ]}, then: true, else: false }},
                           steemstemTag: {$cond: { if: { $in: [ 'steemstem', "$tags"]}, then: true, else: false }},
                           steemmakersVote: {$cond: { if: { $in: [ 'steemmakers', "$curators.voter" ]}, then: true, else: false }},
                           steemmakersTag: {$cond: { if: { $in: [ 'steemmakers', "$tags"]}, then: true, else: false }},
                           mspwavesVote: {$cond: { if: { $in: [ 'msp-waves', "$curators.voter" ]}, then: true, else: false }},
-                          mspwavesTag: {$cond: { if: { $in: [ 'mspwaves', "$tags"]}, then: true, else: false }},
+                          mspwavesTag: {$cond: { if: { $or: [ { $in: [ 'mspwaves', "$tags"]}, { $in: [ 'msp-waves', "$tags"]}]}, then: true, else: false }},
+                          moderatorComment:  {$cond: { if: { $and :[ { $or :[ { $in: [ 'https://join.utopian.io/guidelines', "$links"]}, { $in: [ 'https://support.utopian.io/', "$links"]} ]}, { $eq: ["$postComment", 1]} ]}, then: true, else: false }},
                         }},
 
             { $unwind : "$curators" },
@@ -2048,50 +2051,98 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
               ]}},
 
             { $project: {_id: 0, author: 1, postComment: 1, curators: 1,
-                            steemstemVote: 1, steemmakersVote: 1, mspwavesTag: 1, type: 1, postComment: 1,
+                            steemstemVote: 1, steemmakersVote: 1, mspwavesTag: 1, moderatorComment: 1, type: 1, postComment: 1, utopianTag: 1,
+                            utopianType: {$cond: { if: { $and: [ { $eq: [ true, "$utopianTag"]}, { $ne: [ false, "$type"]} ]}, then: "$type", else: false }},
+                            vote_days: { $divide: [ {$subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, 86400000 ]},
                             voteDay: {$substr: ["$curators.vote_timestamp", 0, 10]}}},
-            { $group: {_id : { voteDay: "$voteDay", steemstem: "$steemstemVote", steemmakers: "$steemmakersVote", mspwaves: "$mspwavesTag", contribution: "$type", postComment: "$postComment"},
+            { $facet: {
+                "date": [
+                    { $group: {_id : { index: "$voteDay", steemstem: "$steemstemVote", steemmakers: "$steemmakersVote", mspwaves: "$mspwavesTag", contribution: "$utopianType", moderatorComment: "$moderatorComment", postComment: "$postComment"},
                                 percent: { $sum: "$curators.percent"},
                                 count: { $sum: 1}
                               }},
-            { $sort: {"_id.voteDay": 1}},
-            ])
-            .toArray()
-            .then(function(categories) {
-                console.dir(categories, {depth: null})
-                let blankRecord = {voteDay: '', steemstem: 0.00, steemmakers: 0.00, mspwaves: 0.00,
-                                            development: 0.00, analysis: 0.00, translations: 0.00, tutorials: 0.00, 'video-tutorials': 0.00,
-                                            'bug-hunting': 0.00, ideas: 0.00, graphics: 0.00, blog: 0.00, documentation: 0.00, copywriting: 0.00, antiabuse: 0.00,
-                                            comments: 0.00, other: 0.00};
+                    { $sort: {"_id.index": 1}},
+                ],
+                "author": [
+                    { $group: {_id : { index: "$author", steemstem: "$steemstemVote", steemmakers: "$steemmakersVote", mspwaves: "$mspwavesTag", contribution: "$utopianType", moderatorComment: "$moderatorComment", postComment: "$postComment"},
+                                percent: { $sum: "$curators.percent"},
+                                count: { $sum: 1}
+                              }},
+                    { $sort: {percent: -1}},
+                ],
+                "timing": [
+                    { $project: {_id: 0, author: 1, steemstemVote: 1, steemmakersVote: 1, mspwavesTag: 1, moderatorComment: 1, utopianType: 1, postComment: 1, vote_days: 1,
+                                      curators: {percent: 1, rshares: 1, vote_timestamp: 1}}},
+                    { $sort: {"curators.vote_timestamp": 1}},
 
-                for (let category of categories) {
-                    let utopianPosition = utopianResults.findIndex(fI => fI.voteDay == category._id.voteDay);
-                    let record = JSON.parse(JSON.stringify(blankRecord));
-                    if (utopianPosition == -1) {
-                        utopianResults.push(record)
-                        utopianPosition = utopianResults.length - 1;
-                    }
+                ],
+            }}
+        ])
+        .toArray()
+        .then(function(studies) {
+            Object.keys(studies[0]).forEach(function(study) {
+                if (study == "date" || study == "author") {
+                    let blankRecord = {index: '', steemstem: 0.00, steemmakers: 0.00, mspwaves: 0.00,
+                                                development: 0.00, analysis: 0.00, translations: 0.00, tutorials: 0.00, 'video-tutorials': 0.00,
+                                                'bug-hunting': 0.00, ideas: 0.00, graphics: 0.00, blog: 0.00, documentation: 0.00, copywriting: 0.00, visibility: 0.00, antiabuse: 0.00,
+                                                moderatorComment: 0.00, comments: 0.00, other: 0.00};
 
-                    record.voteDay = category._id.voteDay;
-                    if (category._id.steemstem == true) {
-                        utopianResults[utopianPosition].steemstem = Number(category.percent.toFixed(2));
-                    } else if (category._id.steemmakers == true) {
-                        utopianResults[utopianPosition].steemmakers = Number(category.percent.toFixed(2));
-                    } else if (category._id.mspwaves == true) {
-                        utopianResults[utopianPosition].mspwaves = Number(category.percent.toFixed(2));
-                    } else if (category._id.postComment == 1) {
-                        utopianResults[utopianPosition].comments = Number(category.percent.toFixed(2));
-                    } else if (category._id.contribution == 'idea') {
-                        utopianResults[utopianPosition].ideas = Number(category.percent.toFixed(2));
-                    } else if (category._id.contribution != false) {
-                        utopianResults[utopianPosition][category._id.contribution] = Number(category.percent.toFixed(2));
-                    } else {
-                        utopianResults[utopianPosition].other = Number(category.percent.toFixed(2));
+                    for (let category of studies[0][study]) {
+
+                        let utopianPosition = utopianResults.findIndex(fI => fI.index == category._id.index);
+                        let record = JSON.parse(JSON.stringify(blankRecord));
+                        if (utopianPosition == -1) {
+                            utopianResults.push(record)
+                            utopianPosition = utopianResults.length - 1;
+                        }
+
+                        record.index = category._id.index;
+                        if (category._id.moderatorComment == true) {
+                            utopianResults[utopianPosition].moderatorComment = Number(category.percent.toFixed(2));
+                        } else if (category._id.contribution == 'idea') {
+                            utopianResults[utopianPosition].ideas = Number(category.percent.toFixed(2));
+                        } else if (category._id.contribution == 'social') {
+                            utopianResults[utopianPosition].visibility = Number(category.percent.toFixed(2));
+                        } else if (category._id.contribution != false) {
+                            utopianResults[utopianPosition][category._id.contribution] = Number(category.percent.toFixed(2));
+                        } else if (category._id.steemstem == true) {
+                            utopianResults[utopianPosition].steemstem = Number(category.percent.toFixed(2));
+                        } else if (category._id.steemmakers == true) {
+                            utopianResults[utopianPosition].steemmakers = Number(category.percent.toFixed(2));
+                        } else if (category._id.mspwaves == true) {
+                            utopianResults[utopianPosition].mspwaves = Number(category.percent.toFixed(2));
+                        } else if (category._id.postComment == 1) {
+                            utopianResults[utopianPosition].comments = Number(category.percent.toFixed(2));
+                        } else {
+                            utopianResults[utopianPosition].other = Number(category.percent.toFixed(2));
+                        }
+                        //console.log(utopianResults[utopianPosition])
                     }
-                    console.log(utopianResults[utopianPosition])
+                } else if (study == "timing") {
+
+                    for (let category of studies[0][study]) {
+                        let utopianCategory = 'other';
+                        if (category.utopianType != false) {
+                            utopianCategory = 'contribution';
+                        } else if (category.steemstemVote == true) {
+                            utopianCategory = 'steemstem';
+                        } else if (category.steemmakersVote == true) {
+                            utopianCategory = 'steemmakers';
+                        } else if (category.mspwavesTag == true) {
+                            utopianCategory = 'mspwaves';
+                        } else if (category.moderatorComment == true) {
+                            utopianCategory = 'moderatorComment';
+                        } else if (category.postComment == 1) {
+                            utopianCategory = 'otherComment';
+                        } else {
+                            // other
+                        }
+                        timingResults.push({vote_time: category.curators.vote_timestamp, vote_days: Number(category.vote_days.toFixed(2)), category: utopianCategory});
+                    }
                 }
             });
-    return utopianResults;
+        });
+    return [utopianResults, timingResults];
 }
 
 module.exports.utopianVotesMongo = utopianVotesMongo;
