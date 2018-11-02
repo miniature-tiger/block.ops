@@ -2021,11 +2021,11 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
     let timingResults = [];
     let voteAccount = 'utopian-io';
     let contributionTypes = ['development', 'analysis', 'translations', 'tutorials', 'video-tutorials', 'bug-hunting', 'ideas', 'idea', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'social', 'antiabuse'];
+    let taskTypes = ['task-development', 'task-analysis', 'task-graphics', 'task-documentation', 'task-copywriting', 'task-visibility', 'task-social', 'task-tutorials'];
     let tagGroup = ['steemstem']
 
     await db.collection('comments').aggregate([
-            { $match :
-                    { "curators.voter": voteAccount}},
+            { $match :  { "curators.voter": voteAccount}},
             { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, timestamp: 1, category: 1, tags: {$ifNull: [ "$tags", []]}, links: {$ifNull: [ "$links", []]} }},
             { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, timestamp: 1, tags: 1, category: 1,
                           type: {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 0]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 0]}, else:
@@ -2033,6 +2033,12 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
                                 {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 2]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 2]}, else:
                                 {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 3]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 3]}, else:
                                 {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 4]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 4]}, else: false
+                              }}}}}}}}}},
+                          taskType: {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 0]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 0]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 1]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 1]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 2]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 2]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 3]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 3]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 4]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 4]}, else: false
                               }}}}}}}}}},
                           utopianTag: {$cond: { if: { $in: [ 'utopian-io', "$tags" ]}, then: true, else: false }},
                           steemstemVote: {$cond: { if: { $in: [ 'steemstem', "$curators.voter" ]}, then: true, else: false }},
@@ -2053,25 +2059,26 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
             { $project: {_id: 0, author: 1, postComment: 1, curators: 1,
                             steemstemVote: 1, steemmakersVote: 1, mspwavesTag: 1, moderatorComment: 1, type: 1, postComment: 1, utopianTag: 1,
                             utopianType: {$cond: { if: { $and: [ { $eq: [ true, "$utopianTag"]}, { $ne: [ false, "$type"]} ]}, then: "$type", else: false }},
+                            utopianTask: {$cond: { if: { $and: [ { $eq: [ true, "$utopianTag"]}, { $ne: [ false, "$taskType"]} ]}, then: "$taskType", else: false }},
                             vote_days: { $divide: [ {$subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, 86400000 ]},
                             voteDay: {$substr: ["$curators.vote_timestamp", 0, 10]}}},
             { $facet: {
                 "date": [
-                    { $group: {_id : { index: "$voteDay", steemstem: "$steemstemVote", steemmakers: "$steemmakersVote", mspwaves: "$mspwavesTag", contribution: "$utopianType", moderatorComment: "$moderatorComment", postComment: "$postComment"},
+                    { $group: {_id : { index: "$voteDay", steemstem: "$steemstemVote", utopianTask: "$utopianTask", mspwaves: "$mspwavesTag", contribution: "$utopianType", moderatorComment: "$moderatorComment", postComment: "$postComment"},
                                 percent: { $sum: "$curators.percent"},
                                 count: { $sum: 1}
                               }},
                     { $sort: {"_id.index": 1}},
                 ],
                 "author": [
-                    { $group: {_id : { index: "$author", steemstem: "$steemstemVote", steemmakers: "$steemmakersVote", mspwaves: "$mspwavesTag", contribution: "$utopianType", moderatorComment: "$moderatorComment", postComment: "$postComment"},
+                    { $group: {_id : { index: "$author", steemstem: "$steemstemVote", utopianTask: "$utopianTask", mspwaves: "$mspwavesTag", contribution: "$utopianType", moderatorComment: "$moderatorComment", postComment: "$postComment"},
                                 percent: { $sum: "$curators.percent"},
                                 count: { $sum: 1}
                               }},
                     { $sort: {percent: -1}},
                 ],
                 "timing": [
-                    { $project: {_id: 0, author: 1, steemstemVote: 1, steemmakersVote: 1, mspwavesTag: 1, moderatorComment: 1, utopianType: 1, postComment: 1, vote_days: 1,
+                    { $project: {_id: 0, author: 1, steemstemVote: 1, utopianTask: 1, mspwavesTag: 1, moderatorComment: 1, utopianType: 1, postComment: 1, vote_days: 1,
                                       curators: {percent: 1, rshares: 1, vote_timestamp: 1}}},
                     { $sort: {"curators.vote_timestamp": 1}},
 
@@ -2082,13 +2089,12 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
         .then(function(studies) {
             Object.keys(studies[0]).forEach(function(study) {
                 if (study == "date" || study == "author") {
-                    let blankRecord = {index: '', steemstem: 0.00, steemmakers: 0.00, mspwaves: 0.00,
+                    let blankRecord = {index: '', steemstem: 0.00, utopianTask: 0.00, mspwaves: 0.00,
                                                 development: 0.00, analysis: 0.00, translations: 0.00, tutorials: 0.00, 'video-tutorials': 0.00,
                                                 'bug-hunting': 0.00, ideas: 0.00, graphics: 0.00, blog: 0.00, documentation: 0.00, copywriting: 0.00, visibility: 0.00, antiabuse: 0.00,
                                                 moderatorComment: 0.00, comments: 0.00, other: 0.00};
 
                     for (let category of studies[0][study]) {
-
                         let utopianPosition = utopianResults.findIndex(fI => fI.index == category._id.index);
                         let record = JSON.parse(JSON.stringify(blankRecord));
                         if (utopianPosition == -1) {
@@ -2098,23 +2104,23 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
 
                         record.index = category._id.index;
                         if (category._id.moderatorComment == true) {
-                            utopianResults[utopianPosition].moderatorComment = Number(category.percent.toFixed(2));
+                            utopianResults[utopianPosition].moderatorComment = Number((utopianResults[utopianPosition].moderatorComment + category.percent).toFixed(2));
                         } else if (category._id.contribution == 'idea') {
-                            utopianResults[utopianPosition].ideas = Number(category.percent.toFixed(2));
+                            utopianResults[utopianPosition].ideas = Number((utopianResults[utopianPosition].ideas + category.percent).toFixed(2));
                         } else if (category._id.contribution == 'social') {
-                            utopianResults[utopianPosition].visibility = Number(category.percent.toFixed(2));
+                            utopianResults[utopianPosition].visibility = Number((utopianResults[utopianPosition].visibility + category.percent).toFixed(2));
                         } else if (category._id.contribution != false) {
-                            utopianResults[utopianPosition][category._id.contribution] = Number(category.percent.toFixed(2));
+                            utopianResults[utopianPosition][category._id.contribution] = Number((utopianResults[utopianPosition][category._id.contribution] + category.percent).toFixed(2));
                         } else if (category._id.steemstem == true) {
-                            utopianResults[utopianPosition].steemstem = Number(category.percent.toFixed(2));
-                        } else if (category._id.steemmakers == true) {
-                            utopianResults[utopianPosition].steemmakers = Number(category.percent.toFixed(2));
+                            utopianResults[utopianPosition].steemstem = Number((utopianResults[utopianPosition].steemstem + category.percent).toFixed(2));
+                        } else if (category._id.utopianTask != false) {
+                            utopianResults[utopianPosition].utopianTask = Number((utopianResults[utopianPosition].utopianTask + category.percent).toFixed(2));
                         } else if (category._id.mspwaves == true) {
-                            utopianResults[utopianPosition].mspwaves = Number(category.percent.toFixed(2));
+                            utopianResults[utopianPosition].mspwaves = Number((utopianResults[utopianPosition].mspwaves + category.percent).toFixed(2));
                         } else if (category._id.postComment == 1) {
-                            utopianResults[utopianPosition].comments = Number(category.percent.toFixed(2));
+                            utopianResults[utopianPosition].comments = Number((utopianResults[utopianPosition].comments + category.percent).toFixed(2));
                         } else {
-                            utopianResults[utopianPosition].other = Number(category.percent.toFixed(2));
+                            utopianResults[utopianPosition].other = Number((utopianResults[utopianPosition].other + category.percent).toFixed(2));
                         }
                         //console.log(utopianResults[utopianPosition])
                     }
@@ -2126,8 +2132,8 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
                             utopianCategory = 'contribution';
                         } else if (category.steemstemVote == true) {
                             utopianCategory = 'steemstem';
-                        } else if (category.steemmakersVote == true) {
-                            utopianCategory = 'steemmakers';
+                        } else if (category.utopianTask != false) {
+                            utopianCategory = 'utopianTask';
                         } else if (category.mspwavesTag == true) {
                             utopianCategory = 'mspwaves';
                         } else if (category.moderatorComment == true) {
@@ -2372,6 +2378,75 @@ async function followSummaryMongo(db, openBlock, closeBlock, localAccount) {
 }
 
 module.exports.followSummaryMongo = followSummaryMongo;
+
+
+
+// Summary of power ups / power downs / power down payments
+// ---------------------------------------------------------
+async function powerSummaryMongo(db, openBlock, closeBlock) {
+    console.log('Summarising all power ups/ power downs.')
+
+    // Summary grouped by date
+    let powerTime = await db.collection('vesting').aggregate([
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+            { $project: { _id: 0, type: 1, from: 1, to: 1, depositedAmount: 1, withdrawnAmount: 1,
+                            date: {$substr: ["$timestamp", 0, 10]},
+                            dateHour: {$substr: ["$timestamp", 0, 13]},
+                            powerUp: {$cond: { if: { $eq: [ "$type", 'transfer_to_vesting'] }, then: "$depositedAmount", else: 0 }},
+                            powerDown: {$cond: { if: { $eq: [ "$type", 'withdraw_vesting'] }, then: "$withdrawnAmount", else: 0 }},
+                            downReleaseVests: {$cond: { if: { $and: [ {$eq: [ "$type", 'fill_vesting_withdraw']}, {$eq: [ "$depositedCurrency", 'STEEM']} ]}, then: "$withdrawnAmount", else: 0 }},
+                            downReleaseSteem: {$cond: { if: { $and: [ {$eq: [ "$type", 'fill_vesting_withdraw']}, {$eq: [ "$depositedCurrency", 'STEEM']} ]}, then: "$depositedAmount", else: 0 }},
+                          }},
+            { $group: {_id : { date: "$date"},
+                                 powerUp: { $sum: "$powerUp" },
+                                 powerDown: { $sum: "$powerDown" },
+                                 downReleaseVests: { $sum: "$downReleaseVests" },
+                                 downReleaseSteem: { $sum: "$downReleaseSteem" },
+                               }},
+            { $sort: {"_id.date": 1}}
+            ])
+            .toArray()
+
+    // Summaries of largest power ups and power downs by account
+    let powerResult = await db.collection('vesting').aggregate([
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+
+            { $project: {_id: 0, type: 1, from: 1, to: 1, depositedAmount: 1, withdrawnAmount: 1,
+                            dateHour: {$substr: ["$timestamp", 0, 13]}}},
+            { $facet: {
+                "powerUps": [
+                    { $match : { type: 'transfer_to_vesting' }},
+                    { $group: {_id : { type: "$type", from: "$from", to: "$to" },
+                                       count: { $sum: 1},
+                                       depositedAmount: { $sum: "$depositedAmount"},
+                                      }},
+                    { $sort: {depositedAmount: -1}}
+                ],
+                "powerDowns": [
+                    { $match : { type: 'withdraw_vesting' }},
+                    { $group: {_id : { type: "$type", from: "$from", to: "$to" },
+                                         count: { $sum: 1},
+                                         depositedAmount: { $sum: "$depositedAmount"},
+                                         withdrawnAmount: { $sum: "$withdrawnAmount"},
+                                      }},
+                    { $sort: {withdrawnAmount: -1}}
+                ],
+                "powerPayments": [
+                    { $match : { type: 'fill_vesting_withdraw' }},
+                    { $group: {_id : {  type: "$type", from: "$from", to: "$to" },
+                                        count: { $sum: 1},
+                                        depositedAmount: { $sum: "$depositedAmount"},
+                                        withdrawnAmount: { $sum: "$withdrawnAmount"},
+                                      }},
+                    { $sort: {depositedAmount: -1}}
+                ],}}
+            ])
+            .toArray()
+
+        return [powerTime, powerResult];
+}
+
+module.exports.powerSummaryMongo = powerSummaryMongo;
 
 
 

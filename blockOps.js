@@ -85,6 +85,8 @@ if (commandLine == 'setup') {
     accountCreationSummary();
 } else if (commandLine == 'followsummary') {
     followSummary();
+} else if (commandLine == 'powersummary') {
+    powerSummary();
 } else {
     // end
 }
@@ -1194,7 +1196,7 @@ async function utopianVotes() {
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
         [utopianVoteSplitByDay, utopianTimingArray] = await mongoblock.utopianVotesMongo(db, openBlock, closeBlock);
-        const fieldNames = ['index', 'steemstem', 'steemmakers', 'mspwaves', 'moderatorComment', 'comments', 'other',
+        const fieldNames = ['index', 'steemstem', 'utopianTask', 'mspwaves', 'moderatorComment', 'comments', 'other',
                                     'development', 'analysis', 'translations', 'tutorials', 'video-tutorials',
                                     'bug-hunting', 'ideas', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'antiabuse'];
         postprocessing.dataExport(utopianVoteSplitByDay.slice(0), 'utopianVoteSplitByDay', fieldNames);
@@ -1350,6 +1352,32 @@ async function followSummary() {
     if (parameterIssue == false) {
         followsArray = await mongoblock.followSummaryMongo(db, openBlock, closeBlock, parameter3);
         console.dir(followsArray, {depth: null})
+    } else {
+        console.log('Parameter issue');
+    }
+
+    console.log('closing mongo db');
+    client.close();
+}
+
+
+
+// Summaries of powering up and down
+// -----------------------------------
+async function powerSummary() {
+    let powerArray = [];
+
+    client = await MongoClient.connect(url, { useNewUrlParser: true });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        powerArray = await mongoblock.powerSummaryMongo(db, openBlock, closeBlock);
+        console.dir(powerArray[0], {depth: null})
+        console.dir(powerArray[1], {depth: null})
+        const fieldNames = ['_id.date', 'powerUp', 'powerDown', 'downReleaseVests', 'downReleaseSteem'];
+        postprocessing.dataExport(powerArray[0].slice(0), 'powerUpDownDate', fieldNames);
     } else {
         console.log('Parameter issue');
     }
