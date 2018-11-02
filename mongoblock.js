@@ -195,7 +195,9 @@ module.exports.processVote = processVote;
 function mongoVote(db, localRecord, reattempt) {
     let maxReattempts = 1;
     let logVote = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: 'vote', count: 1, status: 'OK'};
-    db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.voter}).toArray()
+    db.collection('comments').find({ author: localRecord.author, permlink: localRecord.permlink, "curators.voter": localRecord.voter})
+        .project({ _id: 0, "curators.voter.$": 1, payout_blockNumber: 1})
+        .toArray()
         .then(function(result) {
             // Adds all vote details to curation set if author / permlink / voter combination not found
             if(result.length === 0) {
@@ -216,18 +218,63 @@ function mongoVote(db, localRecord, reattempt) {
                             console.log(error);
                         }
                     });
-            // Updates existing vote details for voter in curation array if author / permlink / voter combination is found
+            // Updates existing vote details for voter in curation array according to logic if author / permlink / voter combination is found
             } else {
-                db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.voter}}},
-                              {$set: {"curators.$.voter": localRecord.voter, "curators.$.percent": localRecord.percent, "curators.$.vote_timestamp": localRecord.vote_timestamp,
-                                      "curators.$.vote_blockNumber": localRecord.vote_blockNumber},
-                                $addToSet: {operations: 'vote'}}, {upsert: false})
-                    .then(function(response) {
-                        mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
-                    })
-                    .catch(function(error) {
-                          console.log('Error: vote', localRecord.voter);
-                    });
+                // payout_blockNumber indicates active votes and curation_payout blocknumber has been loaded
+                if (result[0].hasOwnProperty('payout_blockNumber')) {
+                    // vote_blockNumber indicates a vote (prior or later) has been loaded
+                    if (result[0].curators[0].hasOwnProperty('vote_blockNumber')) {
+                        // check if vote is prior or later in time
+                        if (result[0].curators[0].vote_blockNumber < localRecord.vote_blockNumber) {
+                            // Current vote operation is most recent - but active vote already loaded - update block number only
+                            db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.voter}}},
+                                          {$set: {"curators.$.vote_blockNumber": localRecord.vote_blockNumber},
+                                              $addToSet: {operations: 'vote'}}, {upsert: false})
+                                .then(function(response) {
+                                    mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
+                                })
+                                .catch(function(error) {
+                                      console.log('Error: vote', localRecord.voter);
+                                });
+                        } else {
+                            // Current vote operation has been changed by more recent vote - update nothing
+                            mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
+                        }
+                    } else {
+                        // No prior vote - but active vote already loaded - update block number only
+                        db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.voter}}},
+                                      {$set: {"curators.$.vote_blockNumber": localRecord.vote_blockNumber},
+                                          $addToSet: {operations: 'vote'}}, {upsert: false})
+                            .then(function(response) {
+                                mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
+                            })
+                            .catch(function(error) {
+                                  console.log('Error: vote', localRecord.voter);
+                            });
+                    }
+                } else {
+                    if (result[0].curators[0].hasOwnProperty('vote_blockNumber')) {
+                        if (result[0].curators[0].vote_blockNumber < localRecord.vote_blockNumber) {
+                            // Current vote operation is most recent - active vote not loaded - update everything
+                            db.collection('comments').updateOne({ author: localRecord.author, permlink: localRecord.permlink, curators: { $elemMatch: { voter: localRecord.voter}}},
+                                          {$set: {"curators.$.voter": localRecord.voter, "curators.$.percent": localRecord.percent, "curators.$.vote_timestamp": localRecord.vote_timestamp,
+                                                  "curators.$.vote_blockNumber": localRecord.vote_blockNumber},
+                                            $addToSet: {operations: 'vote'}}, {upsert: false})
+                                .then(function(response) {
+                                    mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
+                                })
+                                .catch(function(error) {
+                                      console.log('Error: vote', localRecord.voter);
+                                });
+                        } else {
+                            // Current vote operation has been changed by more recent vote - update nothing
+                            mongoOperationProcessed(db, localRecord.vote_blockNumber, logVote, 1, 0);
+                        }
+                    } else {
+                        // No prior vote - active vote not loaded - not logically possible as "result" would be empty
+                        console.log('mongoVote logic error')
+                    }
+                }
             }
         })
 }
@@ -469,11 +516,11 @@ module.exports.mongoCuratorReward = mongoCuratorReward;
 
 // Transfer - processing of block operation
 // ---------------------------------------------
-function processTransfer(localOperation, localOperationNumber, mongoVote, db) {
+function processTransfer(localOperation, localOperationNumber, mongoTransfer, db) {
     let [transferAmount, transferCurrency] = localOperation.op[1].amount.split(' ');
     transferAmount = Number(transferAmount);
     let transferRecord = {blockNumber: localOperation.block, from: localOperation.op[1].from, to: localOperation.op[1].to, amount: transferAmount, currency: transferCurrency, memo: localOperation.op[1].memo, timestamp: new Date(localOperation.timestamp + '.000Z'), transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber};
-    mongoVote(db, transferRecord, 0);
+    mongoTransfer(db, transferRecord, 0);
 }
 
 module.exports.processTransfer = processTransfer;
@@ -485,7 +532,7 @@ module.exports.processTransfer = processTransfer;
 function mongoTransfer(db, localRecord, reattempt) {
     let maxReattempts = 1;
     let logTransfer = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: 'transfer', count: 1, status: 'OK'};
-        db.collection('transfers').updateOne({ blockNumber: localRecord.blockNumber, from: localRecord.from, to: localRecord.to}, { $set: localRecord }, {upsert: true})
+        db.collection('transfers').updateOne({ blockNumber: localRecord.blockNumber, transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, from: localRecord.from, to: localRecord.to}, { $set: localRecord }, {upsert: true})
             .then(function(response) {
                 mongoOperationProcessed(db, localRecord.blockNumber, logTransfer, 1, 0);
             })
@@ -545,6 +592,218 @@ function mongoDelegation(db, localRecord, reattempt) {
 }
 
 module.exports.mongoDelegation = mongoDelegation;
+
+
+
+// Account creation - processing of block operations
+// -------------------------------------------------
+function processAccountCreation(localOperation, localOperationNumber, mongoAccountCreation, db) {
+    let accountCreationRecord = {};
+    let feeAmount = 0;
+    let feeCurrency = '';
+    let delegationAmount = 0;
+    let delegationCurrency = '';
+    if (localOperation.op[0] == 'account_create') {
+        [feeAmount, feeCurrency] = localOperation.op[1].fee.split(' ');
+        feeAmount = Number(Number(feeAmount).toFixed(3));
+        accountCreationRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                                  type: 'account_create', creator: localOperation.op[1].creator, account: localOperation.op[1].new_account_name,
+                                  feeAmount: feeAmount, feeCurrency: feeCurrency, delegationAmount: delegationAmount, delegationCurrency: delegationCurrency,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+    } else if (localOperation.op[0] == 'account_create_with_delegation') {
+        [feeAmount, feeCurrency] = localOperation.op[1].fee.split(' ');
+        feeAmount = Number(Number(feeAmount).toFixed(3));
+        [delegationAmount, delegationCurrency] = localOperation.op[1].delegation.split(' ');
+        delegationAmount = Number(Number(delegationAmount).toFixed(6));
+        accountCreationRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                                  type: 'account_create_with_delegation', creator: localOperation.op[1].creator, account: localOperation.op[1].new_account_name,
+                                  feeAmount: feeAmount, feeCurrency: feeCurrency, delegationAmount: delegationAmount, delegationCurrency: delegationCurrency,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+    } else if (localOperation.op[0] == 'claim_account') {
+        [feeAmount, feeCurrency] = localOperation.op[1].fee.split(' ');
+        feeAmount = Number(Number(feeAmount).toFixed(3));
+        accountCreationRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                                  type: 'claim_account', creator: localOperation.op[1].creator, account: '',
+                                  feeAmount: feeAmount, feeCurrency: feeCurrency, delegationAmount: delegationAmount, delegationCurrency: delegationCurrency,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+    } else if (localOperation.op[0] == 'create_claimed_account') {
+        accountCreationRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                                  type: 'create_claimed_account', creator: localOperation.op[1].creator, account: localOperation.op[1].new_account_name,
+                                  feeAmount: feeAmount, feeCurrency: feeCurrency, delegationAmount: delegationAmount, delegationCurrency: delegationCurrency,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+    } else {
+        // Catchall
+    }
+    mongoAccountCreation(db, accountCreationRecord, 0);
+}
+
+module.exports.processAccountCreation = processAccountCreation;
+
+
+
+// Account creation - update of mongo record
+// -----------------------------------------------
+function mongoAccountCreation(db, localRecord, reattempt) {
+    let maxReattempts = 1;
+    let logAccountCreation = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: localRecord.type, count: 1, status: 'OK'};
+        db.collection('createAccounts').updateOne({ blockNumber: localRecord.blockNumber, creator: localRecord.creator, account: localRecord.account, transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber}, { $set: localRecord }, {upsert: true})
+            .then(function(response) {
+                mongoOperationProcessed(db, localRecord.blockNumber, logAccountCreation, 1, 0);
+            })
+            .catch(function(error) {
+                if(error.code == 11000) {
+                    if (reattempt < maxReattempts) {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoAccountCreation. Re-attempting...');
+                        mongoAccountCreation(db, localRecord, reattempt + 1);
+                    } else {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoAccountCreation. Maximum reattempts surpassed.');
+                    }
+                } else {
+                    console.log('Non-standard error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoAccountCreation.');
+                    console.log(error);
+                }
+            });
+}
+
+module.exports.mongoAccountCreation = mongoAccountCreation;
+
+
+
+// Follows and reblogs - processing of block operations
+// -------------------------------------------------
+function processFollows(localOperation, localOperationNumber, mongoFollows, db) {
+    let followsRecord = {};
+    let jsonInfo = JSON.parse(localOperation.op[1].json);
+
+    if (jsonInfo[0] == 'follow') {
+        if (jsonInfo[1].what.length == 0) {
+            followsRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                                  type: 'unfollow', follower: jsonInfo[1].follower, following: jsonInfo[1].following, what: jsonInfo[1].what,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+            mongoFollows(db, followsRecord, 0);
+        } else {
+            followsRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                                  type: 'follow', follower: jsonInfo[1].follower, following: jsonInfo[1].following, what: jsonInfo[1].what,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+            mongoFollows(db, followsRecord, 0);
+        }
+    } else if (jsonInfo[0] == 'reblog') {
+        followsRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
+                              type: 'reblog', follower: localOperation.op[1].required_posting_auths[0], following: jsonInfo[1].author, what: jsonInfo[1].permlink,
+                              timestamp: new Date(localOperation.timestamp + '.000Z') };
+        mongoFollows(db, followsRecord, 0);
+    } else {
+        // Catchall
+        console.log('Error with jsonInfo. Operation skipped.');
+        console.dir(jsonInfo, {depth: null});
+        mongoOperationProcessed(db, localOperation.block, {transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: 'custom_json', count: 1, status: 'skipped'}, 1, 0);
+    }
+}
+
+module.exports.processFollows = processFollows;
+
+
+
+// Follows and reblogs - update of mongo record
+// -----------------------------------------------
+function mongoFollows(db, localRecord, reattempt) {
+    let maxReattempts = 1;
+    let logFollows = {transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber, transactionType: localRecord.type, count: 1, status: 'OK'};
+        db.collection('follows').updateOne({ blockNumber: localRecord.blockNumber, type: localRecord.type, follower: localRecord.follower, following: localRecord.following, transactionNumber: localRecord.transactionNumber, operationNumber: localRecord.operationNumber}, { $set: localRecord }, {upsert: true})
+            .then(function(response) {
+                mongoOperationProcessed(db, localRecord.blockNumber, logFollows, 1, 0);
+            })
+            .catch(function(error) {
+                if(error.code == 11000) {
+                    if (reattempt < maxReattempts) {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoFollows. Re-attempting...');
+                        mongoFollows(db, localRecord, reattempt + 1);
+                    } else {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoFollows. Maximum reattempts surpassed.');
+                    }
+                } else {
+                    console.log('Non-standard error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoFollows.');
+                    console.log(error);
+                }
+            });
+}
+
+module.exports.mongoFollows = mongoFollows;
+
+
+
+// Vesting - power up and power down - processing of block operations
+// -------------------------------------------------------------------
+function processVesting(localOperation, localOperationNumber, mongoVesting, db) {
+    let vestingRecord = {};
+    let logVesting = {};
+    let withdrawnAmount = 0;
+    let withdrawnCurrency = '';
+    let depositedAmount = 0;
+    let depositedCurrency = '';
+    if (localOperation.op[0] == 'transfer_to_vesting') {
+        // Power up
+        [depositedAmount, depositedCurrency] = localOperation.op[1].amount.split(' ');
+        depositedAmount = Number(Number(depositedAmount).toFixed(3));
+        vestingRecord =   { blockNumber: localOperation.block, referenceNumber: (localOperation.trx_in_block + '_' + localOperationNumber),
+                                  type: 'transfer_to_vesting', from: localOperation.op[1].from, to: localOperation.op[1].to,
+                                  depositedAmount: depositedAmount, depositedCurrency: depositedCurrency, withdrawnAmount: withdrawnAmount, withdrawnCurrency: withdrawnCurrency,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+        logVesting = { transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: 'transfer_to_vesting', count: 1, status: 'OK'};
+    } else if (localOperation.op[0] == 'withdraw_vesting') {
+        // Operation to start power down
+        [withdrawnAmount, withdrawnCurrency] = localOperation.op[1].vesting_shares.split(' ');
+        withdrawnAmount = Number(Number(withdrawnAmount).toFixed(6));
+        vestingRecord =   { blockNumber: localOperation.block, referenceNumber: (localOperation.trx_in_block + '_' + localOperationNumber),
+                                  type: 'withdraw_vesting', from: localOperation.op[1].account, to: '',
+                                  depositedAmount: depositedAmount, depositedCurrency: depositedCurrency, withdrawnAmount: withdrawnAmount, withdrawnCurrency: withdrawnCurrency,
+                                  timestamp: new Date(localOperation.timestamp + '.000Z') };
+        logVesting = { transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber, transactionType: 'withdraw_vesting', count: 1, status: 'OK'};
+      } else if (localOperation.op[0] == 'fill_vesting_withdraw') {
+          // Virtual operation for weekly power down
+          [depositedAmount, depositedCurrency] = localOperation.op[1].deposited.split(' ');
+          depositedAmount = Number(Number(depositedAmount).toFixed(3));
+          [withdrawnAmount, withdrawnCurrency] = localOperation.op[1].withdrawn.split(' ');
+          withdrawnAmount = Number(Number(withdrawnAmount).toFixed(6));
+          vestingRecord =   { blockNumber: localOperation.block, referenceNumber: (localOperation.virtual_op + '_0'),
+                                    type: 'fill_vesting_withdraw', from: localOperation.op[1].from_account, to: localOperation.op[1].to_account,
+                                    depositedAmount: depositedAmount, depositedCurrency: depositedCurrency, withdrawnAmount: withdrawnAmount, withdrawnCurrency: withdrawnCurrency,
+                                    timestamp: new Date(localOperation.timestamp + '.000Z') };
+          logVesting = { virtualOp: localOperation.virtual_op, transactionType: 'fill_vesting_withdraw', count: 1, status: 'OK'};
+    } else {
+        // Catchall
+    }
+    mongoVesting(db, vestingRecord, logVesting, 0);
+}
+
+module.exports.processVesting = processVesting;
+
+
+
+//  Vesting - power up and power down - update of mongo record
+// -------------------------------------------------------------
+function mongoVesting(db, localRecord, localLog, reattempt) {
+    let maxReattempts = 1;
+        db.collection('vesting').updateOne({ blockNumber: localRecord.blockNumber, referenceNumber: localRecord.referenceNumber, type: localRecord.type, from: localRecord.from, to: localRecord.to}, { $set: localRecord }, {upsert: true})
+            .then(function(response) {
+                mongoOperationProcessed(db, localRecord.blockNumber, localLog, 1, 0);
+            })
+            .catch(function(error) {
+                if(error.code == 11000) {
+                    if (reattempt < maxReattempts) {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoVesting. Re-attempting...');
+                        mongoAccountCreation(db, localRecord, localLog, reattempt + 1);
+                    } else {
+                        console.log('E11000 error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoVesting. Maximum reattempts surpassed.');
+                    }
+                } else {
+                    console.log('Non-standard error with <', localRecord.blockNumber, localRecord.transactionNumber, '> mongoVesting.');
+                    console.log(error);
+                }
+            });
+}
+
+module.exports.mongoVesting = mongoVesting;
 
 
 
@@ -1759,27 +2018,36 @@ module.exports.voteTimingMongo = voteTimingMongo;
 // ------------------------------------------------------------------------------------------------------------------------------
 async function utopianVotesMongo(db, openBlock, closeBlock) {
     let utopianResults = [];
+    let timingResults = [];
     let voteAccount = 'utopian-io';
-    let contributionTypes = ['development', 'analysis', 'translations', 'tutorials', 'video-tutorials', 'bug-hunting', 'ideas', 'idea', 'graphics', 'blog', 'documentation', 'copywriting', 'antiabuse'];
+    let contributionTypes = ['development', 'analysis', 'translations', 'tutorials', 'video-tutorials', 'bug-hunting', 'ideas', 'idea', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'social', 'antiabuse'];
+    let taskTypes = ['task-development', 'task-analysis', 'task-graphics', 'task-documentation', 'task-copywriting', 'task-visibility', 'task-social', 'task-tutorials'];
     let tagGroup = ['steemstem']
 
     await db.collection('comments').aggregate([
-            { $match :
-                    { "curators.voter": voteAccount}},
-            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, category: 1, tags: {$ifNull: [ "$tags", []]} }},
-            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, tags: 1, category: 1,
+            { $match :  { "curators.voter": voteAccount}},
+            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, timestamp: 1, category: 1, tags: {$ifNull: [ "$tags", []]}, links: {$ifNull: [ "$links", []]} }},
+            { $project: {_id: 0, author: 1, permlink: 1, postComment: 1, curators: 1, timestamp: 1, tags: 1, category: 1,
                           type: {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 0]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 0]}, else:
                                 {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 1]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 1]}, else:
                                 {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 2]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 2]}, else:
                                 {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 3]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 3]}, else:
                                 {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 4]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 4]}, else: false
                               }}}}}}}}}},
+                          taskType: {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 0]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 0]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 1]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 1]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 2]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 2]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 3]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 3]}, else:
+                                {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 4]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 4]}, else: false
+                              }}}}}}}}}},
+                          utopianTag: {$cond: { if: { $in: [ 'utopian-io', "$tags" ]}, then: true, else: false }},
                           steemstemVote: {$cond: { if: { $in: [ 'steemstem', "$curators.voter" ]}, then: true, else: false }},
                           steemstemTag: {$cond: { if: { $in: [ 'steemstem', "$tags"]}, then: true, else: false }},
                           steemmakersVote: {$cond: { if: { $in: [ 'steemmakers', "$curators.voter" ]}, then: true, else: false }},
                           steemmakersTag: {$cond: { if: { $in: [ 'steemmakers', "$tags"]}, then: true, else: false }},
                           mspwavesVote: {$cond: { if: { $in: [ 'msp-waves', "$curators.voter" ]}, then: true, else: false }},
-                          mspwavesTag: {$cond: { if: { $in: [ 'mspwaves', "$tags"]}, then: true, else: false }},
+                          mspwavesTag: {$cond: { if: { $or: [ { $in: [ 'mspwaves', "$tags"]}, { $in: [ 'msp-waves', "$tags"]}]}, then: true, else: false }},
+                          moderatorComment:  {$cond: { if: { $and :[ { $or :[ { $in: [ 'https://join.utopian.io/guidelines', "$links"]}, { $in: [ 'https://support.utopian.io/', "$links"]} ]}, { $eq: ["$postComment", 1]} ]}, then: true, else: false }},
                         }},
 
             { $unwind : "$curators" },
@@ -1789,50 +2057,98 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
               ]}},
 
             { $project: {_id: 0, author: 1, postComment: 1, curators: 1,
-                            steemstemVote: 1, steemmakersVote: 1, mspwavesTag: 1, type: 1, postComment: 1,
+                            steemstemVote: 1, steemmakersVote: 1, mspwavesTag: 1, moderatorComment: 1, type: 1, postComment: 1, utopianTag: 1,
+                            utopianType: {$cond: { if: { $and: [ { $eq: [ true, "$utopianTag"]}, { $ne: [ false, "$type"]} ]}, then: "$type", else: false }},
+                            utopianTask: {$cond: { if: { $and: [ { $eq: [ true, "$utopianTag"]}, { $ne: [ false, "$taskType"]} ]}, then: "$taskType", else: false }},
+                            vote_days: { $divide: [ {$subtract: [ "$curators.vote_timestamp", "$timestamp" ]}, 86400000 ]},
                             voteDay: {$substr: ["$curators.vote_timestamp", 0, 10]}}},
-            { $group: {_id : { voteDay: "$voteDay", steemstem: "$steemstemVote", steemmakers: "$steemmakersVote", mspwaves: "$mspwavesTag", contribution: "$type", postComment: "$postComment"},
+            { $facet: {
+                "date": [
+                    { $group: {_id : { index: "$voteDay", steemstem: "$steemstemVote", utopianTask: "$utopianTask", mspwaves: "$mspwavesTag", contribution: "$utopianType", moderatorComment: "$moderatorComment", postComment: "$postComment"},
                                 percent: { $sum: "$curators.percent"},
                                 count: { $sum: 1}
                               }},
-            { $sort: {"_id.voteDay": 1}},
-            ])
-            .toArray()
-            .then(function(categories) {
-                console.dir(categories, {depth: null})
-                let blankRecord = {voteDay: '', steemstem: 0.00, steemmakers: 0.00, mspwaves: 0.00,
-                                            development: 0.00, analysis: 0.00, translations: 0.00, tutorials: 0.00, 'video-tutorials': 0.00,
-                                            'bug-hunting': 0.00, ideas: 0.00, graphics: 0.00, blog: 0.00, documentation: 0.00, copywriting: 0.00, antiabuse: 0.00,
-                                            comments: 0.00, other: 0.00};
+                    { $sort: {"_id.index": 1}},
+                ],
+                "author": [
+                    { $group: {_id : { index: "$author", steemstem: "$steemstemVote", utopianTask: "$utopianTask", mspwaves: "$mspwavesTag", contribution: "$utopianType", moderatorComment: "$moderatorComment", postComment: "$postComment"},
+                                percent: { $sum: "$curators.percent"},
+                                count: { $sum: 1}
+                              }},
+                    { $sort: {percent: -1}},
+                ],
+                "timing": [
+                    { $project: {_id: 0, author: 1, steemstemVote: 1, utopianTask: 1, mspwavesTag: 1, moderatorComment: 1, utopianType: 1, postComment: 1, vote_days: 1,
+                                      curators: {percent: 1, rshares: 1, vote_timestamp: 1}}},
+                    { $sort: {"curators.vote_timestamp": 1}},
 
-                for (let category of categories) {
-                    let utopianPosition = utopianResults.findIndex(fI => fI.voteDay == category._id.voteDay);
-                    let record = JSON.parse(JSON.stringify(blankRecord));
-                    if (utopianPosition == -1) {
-                        utopianResults.push(record)
-                        utopianPosition = utopianResults.length - 1;
-                    }
+                ],
+            }}
+        ])
+        .toArray()
+        .then(function(studies) {
+            Object.keys(studies[0]).forEach(function(study) {
+                if (study == "date" || study == "author") {
+                    let blankRecord = {index: '', steemstem: 0.00, utopianTask: 0.00, mspwaves: 0.00,
+                                                development: 0.00, analysis: 0.00, translations: 0.00, tutorials: 0.00, 'video-tutorials': 0.00,
+                                                'bug-hunting': 0.00, ideas: 0.00, graphics: 0.00, blog: 0.00, documentation: 0.00, copywriting: 0.00, visibility: 0.00, antiabuse: 0.00,
+                                                moderatorComment: 0.00, comments: 0.00, other: 0.00};
 
-                    record.voteDay = category._id.voteDay;
-                    if (category._id.steemstem == true) {
-                        utopianResults[utopianPosition].steemstem = Number(category.percent.toFixed(2));
-                    } else if (category._id.steemmakers == true) {
-                        utopianResults[utopianPosition].steemmakers = Number(category.percent.toFixed(2));
-                    } else if (category._id.mspwaves == true) {
-                        utopianResults[utopianPosition].mspwaves = Number(category.percent.toFixed(2));
-                    } else if (category._id.postComment == 1) {
-                        utopianResults[utopianPosition].comments = Number(category.percent.toFixed(2));
-                    } else if (category._id.contribution == 'idea') {
-                        utopianResults[utopianPosition].ideas = Number(category.percent.toFixed(2));
-                    } else if (category._id.contribution != false) {
-                        utopianResults[utopianPosition][category._id.contribution] = Number(category.percent.toFixed(2));
-                    } else {
-                        utopianResults[utopianPosition].other = Number(category.percent.toFixed(2));
+                    for (let category of studies[0][study]) {
+                        let utopianPosition = utopianResults.findIndex(fI => fI.index == category._id.index);
+                        let record = JSON.parse(JSON.stringify(blankRecord));
+                        if (utopianPosition == -1) {
+                            utopianResults.push(record)
+                            utopianPosition = utopianResults.length - 1;
+                        }
+
+                        record.index = category._id.index;
+                        if (category._id.moderatorComment == true) {
+                            utopianResults[utopianPosition].moderatorComment = Number((utopianResults[utopianPosition].moderatorComment + category.percent).toFixed(2));
+                        } else if (category._id.contribution == 'idea') {
+                            utopianResults[utopianPosition].ideas = Number((utopianResults[utopianPosition].ideas + category.percent).toFixed(2));
+                        } else if (category._id.contribution == 'social') {
+                            utopianResults[utopianPosition].visibility = Number((utopianResults[utopianPosition].visibility + category.percent).toFixed(2));
+                        } else if (category._id.contribution != false) {
+                            utopianResults[utopianPosition][category._id.contribution] = Number((utopianResults[utopianPosition][category._id.contribution] + category.percent).toFixed(2));
+                        } else if (category._id.steemstem == true) {
+                            utopianResults[utopianPosition].steemstem = Number((utopianResults[utopianPosition].steemstem + category.percent).toFixed(2));
+                        } else if (category._id.utopianTask != false) {
+                            utopianResults[utopianPosition].utopianTask = Number((utopianResults[utopianPosition].utopianTask + category.percent).toFixed(2));
+                        } else if (category._id.mspwaves == true) {
+                            utopianResults[utopianPosition].mspwaves = Number((utopianResults[utopianPosition].mspwaves + category.percent).toFixed(2));
+                        } else if (category._id.postComment == 1) {
+                            utopianResults[utopianPosition].comments = Number((utopianResults[utopianPosition].comments + category.percent).toFixed(2));
+                        } else {
+                            utopianResults[utopianPosition].other = Number((utopianResults[utopianPosition].other + category.percent).toFixed(2));
+                        }
+                        //console.log(utopianResults[utopianPosition])
                     }
-                    console.log(utopianResults[utopianPosition])
+                } else if (study == "timing") {
+
+                    for (let category of studies[0][study]) {
+                        let utopianCategory = 'other';
+                        if (category.utopianType != false) {
+                            utopianCategory = 'contribution';
+                        } else if (category.steemstemVote == true) {
+                            utopianCategory = 'steemstem';
+                        } else if (category.utopianTask != false) {
+                            utopianCategory = 'utopianTask';
+                        } else if (category.mspwavesTag == true) {
+                            utopianCategory = 'mspwaves';
+                        } else if (category.moderatorComment == true) {
+                            utopianCategory = 'moderatorComment';
+                        } else if (category.postComment == 1) {
+                            utopianCategory = 'otherComment';
+                        } else {
+                            // other
+                        }
+                        timingResults.push({vote_time: category.curators.vote_timestamp, vote_days: Number(category.vote_days.toFixed(2)), category: utopianCategory});
+                    }
                 }
             });
-    return utopianResults;
+        });
+    return [utopianResults, timingResults];
 }
 
 module.exports.utopianVotesMongo = utopianVotesMongo;
@@ -1869,6 +2185,7 @@ module.exports.utopianAuthorsMongo = utopianAuthorsMongo;
 // --------------------------------------------
 async function bidbotTransfersMongo(db, openBlock, closeBlock, accountArray) {
     console.log('Matching transfers to votes', accountArray)
+
     return await db.collection('transfers').aggregate([
             { $match :
                     { $or: [
@@ -1928,6 +2245,7 @@ module.exports.bidbotVoteValuesMongo = bidbotVoteValuesMongo;
 // --------------------------------------------
 async function transferSummaryMongo(db, openBlock, closeBlock, localAccount) {
     console.log('Summarising all transfers to and from', localAccount)
+
     return await db.collection('transfers').aggregate([
             { $match :
                     { $or: [
@@ -1946,7 +2264,7 @@ async function transferSummaryMongo(db, openBlock, closeBlock, localAccount) {
                 "time": [
                     { $sort: {timestamp: 1}}
                 ],}}
-          ])
+            ])
             .toArray()
 }
 
@@ -1981,6 +2299,154 @@ async function delegationSummaryMongo(db, openBlock, closeBlock, localAccount) {
 }
 
 module.exports.delegationSummaryMongo = delegationSummaryMongo;
+
+
+
+// Summary of delegations for Account
+// --------------------------------------------
+async function accountCreationSummaryMongo(db, openBlock, closeBlock) {
+    console.log('Summarising all accounts claimed or created with or without delegation.')
+    return await db.collection('createAccounts').aggregate([
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+            { $project: {_id: 0, creator: 1, account: 1, type: 1, feeAmount: 1, feeCurrency: 1, delegationAmount: 1, delegationCurrency: 1,
+                          dateHour: {$substr: ["$timestamp", 0, 13]},
+                          HF20: {$cond: { if: { $gt: [ "$timestamp", new Date('2018-09-25T15:00:00.000Z')] }, then: "HF20", else: "preHF20" }},
+                        }},
+            { $lookup : {   from: "prices",
+                            localField: "dateHour",
+                            foreignField: "_id",
+                            as: "payout_prices"   }},
+            { $project : {  _id: 0, creator: 1, account: 1, type: 1, feeAmount: 1, feeCurrency: 1, delegationAmount: 1, delegationCurrency: 1, dateHour: 1, HF20: 1,
+                            "payout_prices": { "$arrayElemAt": [ "$payout_prices", 0 ]}}},
+            { $project : {  _id: 0, creator: 1, account: 1, type: 1, feeAmount: 1, feeCurrency: 1, delegationAmount: 1, delegationCurrency: 1, dateHour: 1, HF20: 1,
+                                  delegationAmount_STU: { $multiply: [ "$delegationAmount", "$payout_prices.STUPerVests" ]}}},
+            { $facet: {
+                "time": [
+                    { $group: {_id : { dateHour: "$dateHour", type: "$type"},
+                                        feeAmount: { $sum: "$feeAmount"},
+                                        delegationAmount_STU: { $sum: "$delegationAmount_STU"},
+                                        count: { $sum: 1}
+                                      }},
+                    { $sort: {"_id.dateHour": 1, "_id.type": 1}}
+                ],
+                "creator": [
+                    { $group: {_id : { creator: "$creator", HF20: "$HF20"},
+                                        feeAmount: { $sum: "$feeAmount"},
+                                        delegationAmount_STU: { $sum: "$delegationAmount_STU"},
+                                        count: { $sum: 1}
+                                      }},
+                    { $sort: {count: -1}}
+                ],}}
+            ])
+            .toArray()
+}
+
+module.exports.accountCreationSummaryMongo = accountCreationSummaryMongo;
+
+
+
+// Summary of follows / reblogs
+// --------------------------------------------
+async function followSummaryMongo(db, openBlock, closeBlock, localAccount) {
+    console.log('Summarising all follows / reblogs.')
+    return await db.collection('follows').aggregate([
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+
+            { $project: {_id: 0, type: 1, follower: 1, following: 1, what: 1,
+                            dateHour: {$substr: ["$timestamp", 0, 13]}}},
+            { $facet: {
+                "follows": [
+                    { $match : { type: 'follow' }},
+                    { $group: {_id : { type: "$type", following: "$following", what: "$what"},
+                                        count: { $sum: 1}}},
+                    { $sort: {count: -1}}
+                ],
+                "reblogs": [
+                    { $match : { type: 'reblog' }},
+                    { $group: {_id : { type: "$type", following: "$following", what: "$what"},
+                                        count: { $sum: 1}}},
+                    { $sort: {count: -1}}
+                ],
+                localAccount: [
+                    { $match : { following: localAccount }},
+                    { $group: {_id : { type: "$type", following: "$following", what: "$what"},
+                                        count: { $sum: 1}}},
+                    { $sort: {count: -1}}
+                ],}}
+            ])
+            .toArray()
+}
+
+module.exports.followSummaryMongo = followSummaryMongo;
+
+
+
+// Summary of power ups / power downs / power down payments
+// ---------------------------------------------------------
+async function powerSummaryMongo(db, openBlock, closeBlock) {
+    console.log('Summarising all power ups/ power downs.')
+
+    // Summary grouped by date
+    let powerTime = await db.collection('vesting').aggregate([
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+            { $project: { _id: 0, type: 1, from: 1, to: 1, depositedAmount: 1, withdrawnAmount: 1,
+                            date: {$substr: ["$timestamp", 0, 10]},
+                            dateHour: {$substr: ["$timestamp", 0, 13]},
+                            powerUp: {$cond: { if: { $eq: [ "$type", 'transfer_to_vesting'] }, then: "$depositedAmount", else: 0 }},
+                            powerDown: {$cond: { if: { $eq: [ "$type", 'withdraw_vesting'] }, then: "$withdrawnAmount", else: 0 }},
+                            downReleaseVests: {$cond: { if: { $and: [ {$eq: [ "$type", 'fill_vesting_withdraw']}, {$eq: [ "$depositedCurrency", 'STEEM']} ]}, then: "$withdrawnAmount", else: 0 }},
+                            downReleaseSteem: {$cond: { if: { $and: [ {$eq: [ "$type", 'fill_vesting_withdraw']}, {$eq: [ "$depositedCurrency", 'STEEM']} ]}, then: "$depositedAmount", else: 0 }},
+                          }},
+            { $group: {_id : { date: "$date"},
+                                 powerUp: { $sum: "$powerUp" },
+                                 powerDown: { $sum: "$powerDown" },
+                                 downReleaseVests: { $sum: "$downReleaseVests" },
+                                 downReleaseSteem: { $sum: "$downReleaseSteem" },
+                               }},
+            { $sort: {"_id.date": 1}}
+            ])
+            .toArray()
+
+    // Summaries of largest power ups and power downs by account
+    let powerResult = await db.collection('vesting').aggregate([
+            { $match : { blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+
+            { $project: {_id: 0, type: 1, from: 1, to: 1, depositedAmount: 1, withdrawnAmount: 1,
+                            dateHour: {$substr: ["$timestamp", 0, 13]}}},
+            { $facet: {
+                "powerUps": [
+                    { $match : { type: 'transfer_to_vesting' }},
+                    { $group: {_id : { type: "$type", from: "$from", to: "$to" },
+                                       count: { $sum: 1},
+                                       depositedAmount: { $sum: "$depositedAmount"},
+                                      }},
+                    { $sort: {depositedAmount: -1}}
+                ],
+                "powerDowns": [
+                    { $match : { type: 'withdraw_vesting' }},
+                    { $group: {_id : { type: "$type", from: "$from", to: "$to" },
+                                         count: { $sum: 1},
+                                         depositedAmount: { $sum: "$depositedAmount"},
+                                         withdrawnAmount: { $sum: "$withdrawnAmount"},
+                                      }},
+                    { $sort: {withdrawnAmount: -1}}
+                ],
+                "powerPayments": [
+                    { $match : { type: 'fill_vesting_withdraw' }},
+                    { $group: {_id : {  type: "$type", from: "$from", to: "$to" },
+                                        count: { $sum: 1},
+                                        depositedAmount: { $sum: "$depositedAmount"},
+                                        withdrawnAmount: { $sum: "$withdrawnAmount"},
+                                      }},
+                    { $sort: {depositedAmount: -1}}
+                ],}}
+            ])
+            .toArray()
+
+        return [powerTime, powerResult];
+}
+
+module.exports.powerSummaryMongo = powerSummaryMongo;
 
 
 
