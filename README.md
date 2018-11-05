@@ -51,7 +51,7 @@ Runs through loop of blocks (starting from first block of first date parameter) 
   
 Removes all records from a collection **(handle with care!)**.
 
-#### Checking blocks loaded
+##### Checking blocks loaded
 
 Once blocks have been processed the following commands can be used to check the status of those blocks:
 $ node blockOps ...
