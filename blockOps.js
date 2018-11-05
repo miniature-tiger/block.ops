@@ -299,8 +299,9 @@ async function fillOperations() {
         db.collection('follows').createIndex({blockNumber: 1, transactionNumber: 1, operationNumber: 1, following: 1 }, {unique:true});
     }
 
+    db.collection('vesting').createIndex({blockNumber: 1, referenceNumber: 1, type: 1, from: 1, to: 1 }, {unique:true});
     let checkVe = await mongoblock.checkCollectionExists(db, 'vesting');
-    if (checkFo == false) {
+    if (checkVe == false) {
         db.collection('vesting').createIndex({blockNumber: 1, referenceNumber: 1, type: 1, from: 1, to: 1 }, {unique:true});
     }
 
@@ -1195,10 +1196,17 @@ async function utopianVotes() {
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
+
+        let utopianPosts = await mongoblock.reportUtopianCommentsMongo(db, openBlock, closeBlock, 'created', 'posts', 'default');
+        console.dir(utopianPosts, {depth: null})
+
+        let fieldNamesPosts = ['_id.dateDay', '_id.utopianType', '_id.utopianTask', 'authors', 'posts', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_sbd', 'benefactor_payout_steem', 'benefactor_payout_vests', 'curator_payout_vests', 'author_payout_sbd_STU', 'author_payout_steem_STU', 'author_payout_vests_STU', 'benefactor_payout_sbd_STU', 'benefactor_payout_steem_STU', 'benefactor_payout_vests_STU', 'curator_payout_vests_STU'];
+        postprocessing.dataExport(utopianPosts.slice(0), 'utopianPosts', fieldNamesPosts);
+
         [utopianVoteSplitByDay, utopianTimingArray] = await mongoblock.utopianVotesMongo(db, openBlock, closeBlock);
         const fieldNames = ['index', 'steemstem', 'utopianTask', 'mspwaves', 'moderatorComment', 'comments', 'other',
                                     'development', 'analysis', 'translations', 'tutorials', 'video-tutorials',
-                                    'bug-hunting', 'ideas', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'antiabuse'];
+                                    'bug-hunting', 'ideas', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'antiabuse', 'iamutopian'];
         postprocessing.dataExport(utopianVoteSplitByDay.slice(0), 'utopianVoteSplitByDay', fieldNames);
 
         const fieldNames2 = ['vote_time', 'vote_days', 'category'];

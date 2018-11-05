@@ -673,6 +673,7 @@ module.exports.mongoAccountCreation = mongoAccountCreation;
 // -------------------------------------------------
 function processFollows(localOperation, localOperationNumber, mongoFollows, db) {
     let followsRecord = {};
+    //console.log(localOperation.op[1].json)
     let jsonInfo = JSON.parse(localOperation.op[1].json);
 
     if (jsonInfo[0] == 'follow') {
@@ -1240,6 +1241,126 @@ async function reportCommentsMongo(db, openBlock, closeBlock, appChoice, created
 }
 
 module.exports.reportCommentsMongo = reportCommentsMongo;
+
+
+
+// Utopian submissions check
+// --------------------------
+// Function added to utopian vote analysis
+async function reportUtopianCommentsMongo(db, openBlock, closeBlock, createdPayout, depthInd, aggregation) {
+
+    let contributionTypes = ['development', 'developmen', 'analysis', 'translations', 'tutorials', 'video-tutorials', 'bug-hunting', 'ideas', 'idea', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'social', 'antiabuse', 'iamutopian'];
+    let taskTypes = ['task-development', 'task-analysis', 'task-graphics', 'task-documentation', 'task-copywriting', 'task-visibility', 'task-social', 'task-tutorials'];
+
+    let blockSelection = { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }};
+    if (createdPayout == 'created') {
+        blockSelection = { blockNumber: { $gte: openBlock, $lt: closeBlock }};
+    }
+    console.log(blockSelection)
+
+    let depthChoice = {};
+    if (depthInd == 'posts') {
+        depthChoice = { postComment: 0 };
+    } else if (depthInd == 'comments') {
+        depthChoice = { postComment: 1 };
+    }
+
+    let group1 = { dateDay: "$dateDay", utopianType : "$utopianType", utopianTask : "$utopianTask", author: "$author" };
+    let group2 = { dateDay: "$_id.dateDay", utopianType : "$_id.utopianType", utopianTask : "$_id.utopianTask", };
+    let sortDef = { authors: -1 }
+    if ( aggregation == 'allByDate' ) {
+        group1 = { dateDay: "$dateDay", author: "$author" };
+        group2 = { dateDay: "$_id.dateDay" };
+        sortDef = { "_id.dateDay": 1 }
+    } else if ( aggregation == 'appByDate' ) {
+        group1 = { application : "$application", dateDay: "$dateDay", author: "$author" };
+        group2 = { application : "$_id.application", dateDay: "$_id.dateDay" };
+        sortDef = { dateDay: 1 }
+    }
+
+    return db.collection('comments').aggregate([
+            { $match :  { $and :[
+                            blockSelection,
+                            depthChoice,
+                            { operations: 'comment' },
+                            { transactionType: { $ne: 'commentEdit' }},
+                            { tags: 'utopian-io'},
+                        ]}},
+          { $project : {_id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1,
+                            payout_timestamp: 1, dateHour: {$substr: ["$payout_timestamp", 0, 13]}, dateDay: {$substr: ["$timestamp", 0, 10]},
+                            type: {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 0]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 0]}, else:
+                                  {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 1]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 1]}, else:
+                                  {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 2]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 2]}, else:
+                                  {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 3]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 3]}, else:
+                                  {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 4]}, contributionTypes]}, then: {$arrayElemAt: ["$tags", 4]}, else: false
+                                }}}}}}}}}},
+                            taskType: {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 0]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 0]}, else:
+                                  {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 1]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 1]}, else:
+                                  {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 2]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 2]}, else:
+                                  {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 3]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 3]}, else:
+                                  {$cond: { if: { $in: [ {$arrayElemAt: ["$tags", 4]}, taskTypes]}, then: {$arrayElemAt: ["$tags", 4]}, else: false
+                                }}}}}}}}}},
+                            utopianTag: {$cond: { if: { $in: [ 'utopian-io', "$tags" ]}, then: true, else: false }}, }} ,
+          { $project: {_id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1,
+                            payout_timestamp: 1, dateHour: 1, dateDay: 1,
+                            utopianType: {$cond: { if: { $and: [ { $eq: [ true, "$utopianTag"]}, { $ne: [ false, "$type"]} ]}, then: "$type", else: false }},
+                            utopianTask: {$cond: { if: { $and: [ { $eq: [ true, "$utopianTag"]}, { $ne: [ false, "$taskType"]} ]}, then: "$taskType", else: false }},
+                            }},
+           { $lookup : {   from: "prices",
+                            localField: "dateHour",
+                            foreignField: "_id",
+                            as: "payout_prices"   }},
+            { $project : {  _id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1, utopianType: 1, utopianTask: 1,
+                            payout_timestamp: 1, dateHour: 1, dateDay: 1, "payout_prices": { "$arrayElemAt": [ "$payout_prices", 0 ]},
+                         }},
+            { $project : { _id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1, payout_prices: 1, payout_timestamp: 1, dateHour: 1, dateDay: 1, utopianType: 1, utopianTask: 1,
+                                  author_payout_STU: { sbd: "$author_payout.sbd", steem: { $multiply: [ "$author_payout.steem", "$payout_prices.STUPerSteem" ]}, vests: { $divide: [ "$author_payout.vests", "$payout_prices.vestsPerSTU" ]}},
+                                  benefactor_payout_STU: { sbd: "$benefactor_payout.sbd", steem: { $multiply: [ "$benefactor_payout.steem", "$payout_prices.STUPerSteem" ]}, vests: { $divide: [ "$benefactor_payout.vests", "$payout_prices.vestsPerSTU" ]}},
+                                  curator_payout_STU: { vests: { $divide: [ "$curator_payout.vests", "$payout_prices.vestsPerSTU" ]}},
+                          }},
+            { $group :  {_id : group1,
+                        posts: { $sum: 1 },
+                        author_payout_sbd: {$sum: "$author_payout.sbd"},
+                        author_payout_steem: {$sum: "$author_payout.steem"},
+                        author_payout_vests: {$sum: "$author_payout.vests"},
+                        benefactor_payout_sbd: {$sum: "$benefactor_payout.sbd"},
+                        benefactor_payout_steem: {$sum: "$benefactor_payout.steem"},
+                        benefactor_payout_vests: {$sum: "$benefactor_payout.vests"},
+                        curator_payout_vests: {$sum: "$curator_payout.vests"},
+                        author_payout_sbd_STU: {$sum: "$author_payout_STU.sbd"},
+                        author_payout_steem_STU: {$sum: "$author_payout_STU.steem"},
+                        author_payout_vests_STU: {$sum: "$author_payout_STU.vests"},
+                        benefactor_payout_sbd_STU: {$sum: "$benefactor_payout_STU.sbd"},
+                        benefactor_payout_steem_STU: {$sum: "$benefactor_payout_STU.steem"},
+                        benefactor_payout_vests_STU: {$sum: "$benefactor_payout_STU.vests"},
+                        curator_payout_vests_STU: {$sum: "$curator_payout_STU.vests"},
+                        }},
+            { $group :  {_id : group2,
+                        authors: {$sum: 1},
+                        posts: {$sum: "$posts"},
+                        author_payout_sbd: {$sum: "$author_payout_sbd"},
+                        author_payout_steem: {$sum: "$author_payout_steem"},
+                        author_payout_vests: {$sum: "$author_payout_vests"},
+                        benefactor_payout_sbd: {$sum: "$benefactor_payout_sbd"},
+                        benefactor_payout_steem: {$sum: "$benefactor_payout_steem"},
+                        benefactor_payout_vests: {$sum: "$benefactor_payout_vests"},
+                        curator_payout_vests: {$sum: "$curator_payout_vests"},
+                        author_payout_sbd_STU: {$sum: "$author_payout_sbd_STU"},
+                        author_payout_steem_STU: {$sum: "$author_payout_steem_STU"},
+                        author_payout_vests_STU: {$sum: "$author_payout_vests_STU"},
+                        benefactor_payout_sbd_STU: {$sum: "$benefactor_payout_sbd_STU"},
+                        benefactor_payout_steem_STU: {$sum: "$benefactor_payout_steem_STU"},
+                        benefactor_payout_vests_STU: {$sum: "$benefactor_payout_vests_STU"},
+                        curator_payout_vests_STU: {$sum: "$curator_payout_vests_STU"},
+                      }},
+            { $sort : sortDef}
+        ], {allowDiskUse: true})
+        .toArray().catch(function(error) {
+            console.log(error);
+        });
+}
+
+module.exports.reportUtopianCommentsMongo = reportUtopianCommentsMongo;
 
 
 
@@ -2020,7 +2141,7 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
     let utopianResults = [];
     let timingResults = [];
     let voteAccount = 'utopian-io';
-    let contributionTypes = ['development', 'analysis', 'translations', 'tutorials', 'video-tutorials', 'bug-hunting', 'ideas', 'idea', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'social', 'antiabuse'];
+    let contributionTypes = ['development', 'analysis', 'translations', 'tutorials', 'video-tutorials', 'bug-hunting', 'ideas', 'idea', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'social', 'antiabuse', 'iamutopian'];
     let taskTypes = ['task-development', 'task-analysis', 'task-graphics', 'task-documentation', 'task-copywriting', 'task-visibility', 'task-social', 'task-tutorials'];
     let tagGroup = ['steemstem']
 
@@ -2091,7 +2212,7 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
                 if (study == "date" || study == "author") {
                     let blankRecord = {index: '', steemstem: 0.00, utopianTask: 0.00, mspwaves: 0.00,
                                                 development: 0.00, analysis: 0.00, translations: 0.00, tutorials: 0.00, 'video-tutorials': 0.00,
-                                                'bug-hunting': 0.00, ideas: 0.00, graphics: 0.00, blog: 0.00, documentation: 0.00, copywriting: 0.00, visibility: 0.00, antiabuse: 0.00,
+                                                'bug-hunting': 0.00, ideas: 0.00, graphics: 0.00, blog: 0.00, documentation: 0.00, copywriting: 0.00, visibility: 0.00, antiabuse: 0.00, iamutopian: 0.00,
                                                 moderatorComment: 0.00, comments: 0.00, other: 0.00};
 
                     for (let category of studies[0][study]) {
