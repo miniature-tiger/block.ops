@@ -42,17 +42,36 @@ $ node blockOps ...
   e.g. $ node blockOps filloperations 20000000 10   --->   processes 10 blocks starting with block number 20million
   
 Runs through loop of blocks (starting from first block of first date parameter) to analyse operations and add the data to MongoDB.
+
+* patchoperations 
+
+  A specific fix for picking up virtual operation of block 26038153 from the long blockchain stoppage on Sep 17 2018.
+
+* remove < nameOfCollectionToRemove >
   
+Removes all records from a collection **(handle with care!)**.
+
+#### Checking blocks loaded
+
+Once blocks have been processed the following commands can be used to check the status of those blocks:
+$ node blockOps ...
+
 * reportblocks < date or block number > < date or number of blocks > 
   
   e.g. $ node blockOps reportblocks "2018-09-02" "2018-09-04"
   
 Reports on status of blocks processed for date range. Blocks can have three different statuses: 'OK', error', or 'processing' (the latter means that the block failed to finish adding all the operations and complete validation).
 
-* remove < nameOfCollectionToRemove >
-  
-Removes all records from a collection **(handle with care!)**.
+Blocks with 'error' / 'processing' status can be picked up and rerun simply by rerunning the range of blocks previously processed ('OK' status blocks are not rerun). Typically around 1% of blocks will fail to process correctly simply due to API call failures. 1 or 2 reruns to pick up these blocks can be processed very quickly.
 
+* validate < date or block number > < date or number of blocks > 
+
+Runs a number of consistency tests on the loaded blocks.
+  
+* showblock < block number > 
+
+Shows the blocksProcessed status report for a single block.
+  
 
 ##### Analyses
 
@@ -69,22 +88,15 @@ Adding a user name returns only those votes from the individual user.
 
 ## Road map: (still fluid!)
 
-1) Complete processing of desired operations
+1) Complete processing of desired operations - First stage complete - All operations and virtual operation related to comments, votes, rewards, transfers, delegation, follows, reblogs, account creation, power ups/downs included. 
 2) Add a user-friendly front-end
 3) Add charts
 4) Realtime / forward processing
 
 
-### Short term
-* Consider other operations to be analysed from the list below:
-  
-  To be included:
-  'withdraw_vesting',
-  'transfer_to_vesting',
-  'fill_vesting_withdraw',
-  
-  For future consideration:
- 
+#### Future consideration
+
+* Consider other operations to be analysed from the list below: 
   'claim_reward_balance',
   
   'transfer_to_savings',
@@ -116,9 +128,7 @@ Adding a user name returns only those votes from the individual user.
   'delete_comment'
   
   'request_account_recovery',
-  'recover_account',
-  
-   
+  'recover_account'
   
 
 ### To be completed
