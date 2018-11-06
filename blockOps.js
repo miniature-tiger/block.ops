@@ -706,7 +706,7 @@ async function patchVirtualOperations() {
                     preProcessed += 1;
                 }
                 count += 1;
-                setTimeout(patchRunner, Math.max(200 - (Date.now() - lastMongo), 0));
+                setTimeout(patchRunner, Math.max(50 - (Date.now() - lastMongo), 0));
 
             } else if (operation.op[0] == 'comment_benefactor_reward') {
                 if (operation.opStatus != 'OK') {
@@ -716,7 +716,18 @@ async function patchVirtualOperations() {
                     preProcessed += 1;
                 }
                 count += 1;
-                setTimeout(patchRunner, Math.max(100 - (Date.now() - lastMongo), 0));
+                setTimeout(patchRunner, Math.max(50 - (Date.now() - lastMongo), 0));
+
+            } else if (operation.op[0] == 'fill_vesting_withdraw') {
+                if (operation.opStatus != 'OK') {
+                    mongoblock.processVesting(operation, 0, mongoblock.mongoVesting, db);
+                    lastMongo = Date.now();
+                } else {
+                    preProcessed += 1;
+                }
+                count += 1;
+                setTimeout(patchRunner, Math.max(50 - (Date.now() - lastMongo), 0));
+
             } else {
                 opsNotHandled += 1;
                 patchRunner();
