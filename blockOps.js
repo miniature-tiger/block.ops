@@ -323,6 +323,7 @@ async function fillOperations() {
     let blockProcessArray = [];
     let blockProcessArrayFlag = false;
     let debug = false;
+    let difficultBlocks = [23791925];
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     console.log(openBlock, closeBlock, parameterIssue);
@@ -376,6 +377,10 @@ async function fillOperations() {
     function processOps(error, response, body, localBlockNo) {
         if (!error) {
             try {
+                // Workaround for exceptional blocks with jsonparse issues
+                if (difficultBlocks.includes(localBlockNo)) {
+                    body = fixBlock(body, localBlockNo);
+                }
                 let result = JSON.parse(body).result;
                 if( result == undefined) {
                     console.log(localBlockNo)
@@ -491,7 +496,7 @@ async function fillOperations() {
                     fiveBlock('marker' + blocksStarted);
                 }
             } catch (error) {
-                console.log(error)
+                console.log(error);
                 console.log('Error in processing virtual ops:', localBlockNo, 'Error logged.');
                 let errorRecord = {blockNumber: localBlockNo, status: 'error'};
                 mongoblock.mongoErrorLog(db, errorRecord, 0);
@@ -528,6 +533,20 @@ async function fillOperations() {
         console.log(unknownVirtuals);
         //console.log('db closing');
         //client.close();
+    }
+
+    // Workaround function for exceptional blocks with jsonparse issues
+    // ----------------------------------------------------------------
+    function fixBlock(localBody, blockToFix) {
+        console.log('Fixing block.');
+        let result = '';
+        let openFirst = 0, closeFirst = 0;
+        if (blockToFix == 23791925) {
+            openFirst = localBody.indexOf('{"trx_id"', 0);
+            closeFirst = localBody.indexOf('{"trx_id"', openFirst + 10);
+            result = localBody.slice(0, openFirst) + localBody.slice(closeFirst, localBody.length);
+        }
+        return result;
     }
 
 // Closing fillOperations
