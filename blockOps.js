@@ -608,6 +608,7 @@ async function activeVotes(localOperation, db) {
 // This patch can be applied where these virtual operations cannot be obtained due to steemit.api server timeout
 async function patchVirtualOperations() {
 
+    let blockNumberPatch = Number(parameter1);
     let opsNotHandled = 0;
     let preProcessed = 0;
     let preActiveProcessed = 0;
@@ -622,8 +623,8 @@ async function patchVirtualOperations() {
 
     // Function to load json file of operations into memory
     function jsonFile(folderName, fileName) {
-        console.log(path.join(__dirname, folderName, fileName))
-        return fsPromises.readFile(path.join(__dirname, folderName, fileName), 'utf8')
+        console.log(path.join(__dirname, 'lostBlocks', folderName, fileName));
+        return fsPromises.readFile(path.join(__dirname, 'lostBlocks', folderName, fileName), 'utf8')
             .catch(function(error) {
                 console.log(error);
             });
@@ -631,14 +632,14 @@ async function patchVirtualOperations() {
 
     //Reset operations counter in blocksProcessed for blocks being rerun
     db.collection('blocksProcessed')
-        .updateMany({ blockNumber: 26038153, status: {$ne: 'OK'}},
+        .updateMany({ blockNumber: blockNumberPatch, status: {$ne: 'OK'}},
                 {$set: {operationsProcessed: 0, activeVoteSetProcessed: 0}, $pull: { operations: {transactionType: "notHandled"}}}, {upsert: false})
         .catch(function(error) {
             console.log(error);
         });
 
     // Call function to read json file into memory, parse, and annotate with default statuses
-    let lostArray = await jsonFile('lostBlocks', '26038153.json');
+    let lostArray = await jsonFile(parameter1, parameter1 + '.json');
     console.log('Array loaded.', ((Date.now() - launchTime)/1000/60).toFixed(2));
     lostArray = JSON.parse(lostArray);
     for (let entry of lostArray) {
@@ -650,14 +651,15 @@ async function patchVirtualOperations() {
     console.log('Array parsed and annotated.', ((Date.now() - launchTime)/1000/60).toFixed(2));
 
     // Start of processing loop - add blockrecord (operations processed log) to blocksProcessed
-    let timestamp = new Date('2018-09-17T19:56:51.000Z');
-    let blockRecord = {blockNumber: 26038153, timestamp: timestamp, status: 'Processing', operationsCount: lostArray.length, activeVoteSetCount: 6759, activeVoteSetProcessed: 0};
+    //let timestamp = new Date('2018-09-17T19:56:51.000Z');
+    let timestamp = new Date(lostArray[0].timestamp + '.000Z');
+    let blockRecord = {blockNumber: blockNumberPatch, timestamp: timestamp, status: 'Processing', operationsCount: lostArray.length, activeVoteSetCount: 6759, activeVoteSetProcessed: 0};
     mongoblock.mongoBlockProcessed(db, blockRecord, 0);
 
     // Update statuses in lostArray based on any previous runs
     await db.collection('blocksProcessed')
         .aggregate([
-            { $match : {blockNumber: 26038153}},
+            { $match : {blockNumber: blockNumberPatch}},
             { $project : {_id: 0, operations: 1 }},
             { $unwind : "$operations"},
         ])
@@ -667,6 +669,10 @@ async function patchVirtualOperations() {
             for (let record of records) {
                 if (record.operations.hasOwnProperty('virtualOp')) {
                     let arrayPosition = lostArray.findIndex(fI => fI.virtual_op == record.operations.virtualOp);
+                    if (arrayPosition == -1) {
+                        console.dir(record, {depth: null})
+                        
+                    }
                     lostArray[arrayPosition].opStatus = record.operations.status;
                 } else if (record.operations.hasOwnProperty('associatedOp')) {
                     let arrayPosition = lostArray.findIndex(fI => fI.virtual_op == record.operations.associatedOp);
@@ -756,17 +762,17 @@ async function patchVirtualOperations() {
 
     // Adding numbers of blocks preprocessed or not handled and checking complete
     function finishUp() {
-        db.collection('blocksProcessed').findOneAndUpdate(  { blockNumber: 26038153},
+        db.collection('blocksProcessed').findOneAndUpdate(  { blockNumber: blockNumberPatch},
                                                             { $inc: {activeVoteSetProcessed: preActiveProcessed}},
                                                             { upsert: false, returnOriginal: false, maxTimeMS: 2000})
             .then(function(response) {
                 if ((response.value.operationsCount == response.value.operationsProcessed) && (response.value.activeVoteSetCount == response.value.activeVoteSetProcessed) && (response.value.status == 'Processing')) {
-                    db.collection('blocksProcessed').updateOne({ blockNumber: 26038153}, {$set: {status: 'OK'}})
+                    db.collection('blocksProcessed').updateOne({ blockNumber: blockNumberPatch}, {$set: {status: 'OK'}})
                 }
             });
 
         let recordOperation = {transactionType: 'notHandled', ops_not_handled: opsNotHandled, skipped_ops: preProcessed, count: opsNotHandled + preProcessed, status: 'OK'};
-        mongoblock.mongoOperationProcessed(db, 26038153, recordOperation, opsNotHandled + preProcessed, 0);
+        mongoblock.mongoOperationProcessed(db, blockNumberPatch, recordOperation, opsNotHandled + preProcessed, 0);
         console.log('----- Process Completed -----', ((Date.now() - launchTime)/1000/60).toFixed(2));
     }
 }
