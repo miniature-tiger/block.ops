@@ -299,8 +299,9 @@ async function fillOperations() {
         db.collection('follows').createIndex({blockNumber: 1, transactionNumber: 1, operationNumber: 1, following: 1 }, {unique:true});
     }
 
+    db.collection('vesting').createIndex({blockNumber: 1, referenceNumber: 1, type: 1, from: 1, to: 1 }, {unique:true});
     let checkVe = await mongoblock.checkCollectionExists(db, 'vesting');
-    if (checkFo == false) {
+    if (checkVe == false) {
         db.collection('vesting').createIndex({blockNumber: 1, referenceNumber: 1, type: 1, from: 1, to: 1 }, {unique:true});
     }
 
@@ -322,6 +323,7 @@ async function fillOperations() {
     let blockProcessArray = [];
     let blockProcessArrayFlag = false;
     let debug = false;
+    let difficultBlocks = [23791925];
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     console.log(openBlock, closeBlock, parameterIssue);
@@ -375,6 +377,10 @@ async function fillOperations() {
     function processOps(error, response, body, localBlockNo) {
         if (!error) {
             try {
+                // Workaround for exceptional blocks with jsonparse issues
+                if (difficultBlocks.includes(localBlockNo)) {
+                    body = fixBlock(body, localBlockNo);
+                }
                 let result = JSON.parse(body).result;
                 if( result == undefined) {
                     console.log(localBlockNo)
@@ -490,7 +496,7 @@ async function fillOperations() {
                     fiveBlock('marker' + blocksStarted);
                 }
             } catch (error) {
-                console.log(error)
+                console.log(error);
                 console.log('Error in processing virtual ops:', localBlockNo, 'Error logged.');
                 let errorRecord = {blockNumber: localBlockNo, status: 'error'};
                 mongoblock.mongoErrorLog(db, errorRecord, 0);
@@ -527,6 +533,20 @@ async function fillOperations() {
         console.log(unknownVirtuals);
         //console.log('db closing');
         //client.close();
+    }
+
+    // Workaround function for exceptional blocks with jsonparse issues
+    // ----------------------------------------------------------------
+    function fixBlock(localBody, blockToFix) {
+        console.log('Fixing block.');
+        let result = '';
+        let openFirst = 0, closeFirst = 0;
+        if (blockToFix == 23791925) {
+            openFirst = localBody.indexOf('{"trx_id"', 0);
+            closeFirst = localBody.indexOf('{"trx_id"', openFirst + 10);
+            result = localBody.slice(0, openFirst) + localBody.slice(closeFirst, localBody.length);
+        }
+        return result;
     }
 
 // Closing fillOperations
@@ -588,6 +608,7 @@ async function activeVotes(localOperation, db) {
 // This patch can be applied where these virtual operations cannot be obtained due to steemit.api server timeout
 async function patchVirtualOperations() {
 
+    let blockNumberPatch = Number(parameter1);
     let opsNotHandled = 0;
     let preProcessed = 0;
     let preActiveProcessed = 0;
@@ -602,8 +623,8 @@ async function patchVirtualOperations() {
 
     // Function to load json file of operations into memory
     function jsonFile(folderName, fileName) {
-        console.log(path.join(__dirname, folderName, fileName))
-        return fsPromises.readFile(path.join(__dirname, folderName, fileName), 'utf8')
+        console.log(path.join(__dirname, 'lostBlocks', folderName, fileName));
+        return fsPromises.readFile(path.join(__dirname, 'lostBlocks', folderName, fileName), 'utf8')
             .catch(function(error) {
                 console.log(error);
             });
@@ -611,14 +632,14 @@ async function patchVirtualOperations() {
 
     //Reset operations counter in blocksProcessed for blocks being rerun
     db.collection('blocksProcessed')
-        .updateMany({ blockNumber: 26038153, status: {$ne: 'OK'}},
+        .updateMany({ blockNumber: blockNumberPatch, status: {$ne: 'OK'}},
                 {$set: {operationsProcessed: 0, activeVoteSetProcessed: 0}, $pull: { operations: {transactionType: "notHandled"}}}, {upsert: false})
         .catch(function(error) {
             console.log(error);
         });
 
     // Call function to read json file into memory, parse, and annotate with default statuses
-    let lostArray = await jsonFile('lostBlocks', '26038153.json');
+    let lostArray = await jsonFile(parameter1, parameter1 + '.json');
     console.log('Array loaded.', ((Date.now() - launchTime)/1000/60).toFixed(2));
     lostArray = JSON.parse(lostArray);
     for (let entry of lostArray) {
@@ -630,14 +651,15 @@ async function patchVirtualOperations() {
     console.log('Array parsed and annotated.', ((Date.now() - launchTime)/1000/60).toFixed(2));
 
     // Start of processing loop - add blockrecord (operations processed log) to blocksProcessed
-    let timestamp = new Date('2018-09-17T19:56:51.000Z');
-    let blockRecord = {blockNumber: 26038153, timestamp: timestamp, status: 'Processing', operationsCount: lostArray.length, activeVoteSetCount: 6759, activeVoteSetProcessed: 0};
+    //let timestamp = new Date('2018-09-17T19:56:51.000Z');
+    let timestamp = new Date(lostArray[0].timestamp + '.000Z');
+    let blockRecord = {blockNumber: blockNumberPatch, timestamp: timestamp, status: 'Processing', operationsCount: lostArray.length, activeVoteSetCount: 6759, activeVoteSetProcessed: 0};
     mongoblock.mongoBlockProcessed(db, blockRecord, 0);
 
     // Update statuses in lostArray based on any previous runs
     await db.collection('blocksProcessed')
         .aggregate([
-            { $match : {blockNumber: 26038153}},
+            { $match : {blockNumber: blockNumberPatch}},
             { $project : {_id: 0, operations: 1 }},
             { $unwind : "$operations"},
         ])
@@ -647,6 +669,10 @@ async function patchVirtualOperations() {
             for (let record of records) {
                 if (record.operations.hasOwnProperty('virtualOp')) {
                     let arrayPosition = lostArray.findIndex(fI => fI.virtual_op == record.operations.virtualOp);
+                    if (arrayPosition == -1) {
+                        console.dir(record, {depth: null})
+                        
+                    }
                     lostArray[arrayPosition].opStatus = record.operations.status;
                 } else if (record.operations.hasOwnProperty('associatedOp')) {
                     let arrayPosition = lostArray.findIndex(fI => fI.virtual_op == record.operations.associatedOp);
@@ -705,7 +731,7 @@ async function patchVirtualOperations() {
                     preProcessed += 1;
                 }
                 count += 1;
-                setTimeout(patchRunner, Math.max(200 - (Date.now() - lastMongo), 0));
+                setTimeout(patchRunner, Math.max(50 - (Date.now() - lastMongo), 0));
 
             } else if (operation.op[0] == 'comment_benefactor_reward') {
                 if (operation.opStatus != 'OK') {
@@ -715,7 +741,18 @@ async function patchVirtualOperations() {
                     preProcessed += 1;
                 }
                 count += 1;
-                setTimeout(patchRunner, Math.max(100 - (Date.now() - lastMongo), 0));
+                setTimeout(patchRunner, Math.max(50 - (Date.now() - lastMongo), 0));
+
+            } else if (operation.op[0] == 'fill_vesting_withdraw') {
+                if (operation.opStatus != 'OK') {
+                    mongoblock.processVesting(operation, 0, mongoblock.mongoVesting, db);
+                    lastMongo = Date.now();
+                } else {
+                    preProcessed += 1;
+                }
+                count += 1;
+                setTimeout(patchRunner, Math.max(50 - (Date.now() - lastMongo), 0));
+
             } else {
                 opsNotHandled += 1;
                 patchRunner();
@@ -725,17 +762,17 @@ async function patchVirtualOperations() {
 
     // Adding numbers of blocks preprocessed or not handled and checking complete
     function finishUp() {
-        db.collection('blocksProcessed').findOneAndUpdate(  { blockNumber: 26038153},
+        db.collection('blocksProcessed').findOneAndUpdate(  { blockNumber: blockNumberPatch},
                                                             { $inc: {activeVoteSetProcessed: preActiveProcessed}},
                                                             { upsert: false, returnOriginal: false, maxTimeMS: 2000})
             .then(function(response) {
                 if ((response.value.operationsCount == response.value.operationsProcessed) && (response.value.activeVoteSetCount == response.value.activeVoteSetProcessed) && (response.value.status == 'Processing')) {
-                    db.collection('blocksProcessed').updateOne({ blockNumber: 26038153}, {$set: {status: 'OK'}})
+                    db.collection('blocksProcessed').updateOne({ blockNumber: blockNumberPatch}, {$set: {status: 'OK'}})
                 }
             });
 
         let recordOperation = {transactionType: 'notHandled', ops_not_handled: opsNotHandled, skipped_ops: preProcessed, count: opsNotHandled + preProcessed, status: 'OK'};
-        mongoblock.mongoOperationProcessed(db, 26038153, recordOperation, opsNotHandled + preProcessed, 0);
+        mongoblock.mongoOperationProcessed(db, blockNumberPatch, recordOperation, opsNotHandled + preProcessed, 0);
         console.log('----- Process Completed -----', ((Date.now() - launchTime)/1000/60).toFixed(2));
     }
 }
@@ -1195,10 +1232,17 @@ async function utopianVotes() {
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
+
+        let utopianPosts = await mongoblock.reportUtopianCommentsMongo(db, openBlock, closeBlock, 'created', 'posts', 'default');
+        console.dir(utopianPosts, {depth: null})
+
+        let fieldNamesPosts = ['_id.dateDay', '_id.utopianType', '_id.utopianTask', 'authors', 'posts', 'author_payout_sbd', 'author_payout_steem', 'author_payout_vests', 'benefactor_payout_sbd', 'benefactor_payout_steem', 'benefactor_payout_vests', 'curator_payout_vests', 'author_payout_sbd_STU', 'author_payout_steem_STU', 'author_payout_vests_STU', 'benefactor_payout_sbd_STU', 'benefactor_payout_steem_STU', 'benefactor_payout_vests_STU', 'curator_payout_vests_STU'];
+        postprocessing.dataExport(utopianPosts.slice(0), 'utopianPosts', fieldNamesPosts);
+
         [utopianVoteSplitByDay, utopianTimingArray] = await mongoblock.utopianVotesMongo(db, openBlock, closeBlock);
         const fieldNames = ['index', 'steemstem', 'utopianTask', 'mspwaves', 'moderatorComment', 'comments', 'other',
                                     'development', 'analysis', 'translations', 'tutorials', 'video-tutorials',
-                                    'bug-hunting', 'ideas', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'antiabuse'];
+                                    'bug-hunting', 'ideas', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'antiabuse', 'iamutopian'];
         postprocessing.dataExport(utopianVoteSplitByDay.slice(0), 'utopianVoteSplitByDay', fieldNames);
 
         const fieldNames2 = ['vote_time', 'vote_days', 'category'];
