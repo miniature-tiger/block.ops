@@ -169,3 +169,114 @@ function dataExport(localData, localFileName, fields) {
 }
 
 module.exports.dataExport = dataExport;
+
+
+
+// Remove separate _id object from Mongo output array
+// --------------------------------------------------
+function tidyID(arrayOutput) {
+    let result = [];
+    for (let i = 0; i < arrayOutput.length; i+=1) {
+        let entry = arrayOutput[i]._id;
+        Object.keys(arrayOutput[i]).forEach(function(field) {
+            if (field != '_id') {
+                entry[field] = arrayOutput[i][field];
+            }
+        });
+        result.push(entry)
+    }
+    return result;
+}
+
+module.exports.tidyID = tidyID;
+
+
+// Combine earnings list inputs into single list
+// ---------------------------------------------
+function combineByUser(authorInput, curatorInput, benefactorInput) {
+    for (let authorRecord of authorInput) {
+        authorRecord["voteCount"] = 0;
+        authorRecord["curator_payout_STU"] = 0;
+        authorRecord["benefactorCount"] = 0;
+        authorRecord["benefactor_payout_STU"] = 0;
+        authorRecord["total_payout_STU"] = authorRecord.author_payout_STU;
+    }
+
+    for (let curatorRecord of curatorInput) {
+        let authorRecord = authorInput.find(author => author.user == curatorRecord.user)
+        if (authorRecord == undefined) {
+            curatorRecord["postCount"] = 0;
+            curatorRecord["author_payout_STU"] = 0;
+            curatorRecord["benefactorCount"] = 0;
+            curatorRecord["benefactor_payout_STU"] = 0;
+            curatorRecord["total_payout_STU"] = curatorRecord.curator_payout_STU;
+            authorInput.push(curatorRecord);
+        } else {
+            authorRecord["voteCount"] = curatorRecord.voteCount;
+            authorRecord["curator_payout_STU"] = curatorRecord.curator_payout_STU;
+            authorRecord["total_payout_STU"] += curatorRecord.curator_payout_STU;
+        }
+    }
+
+    for (let benefactorRecord of benefactorInput) {
+        let authorRecord = authorInput.find(author => author.user == benefactorRecord.user)
+        if (authorRecord == undefined) {
+            benefactorRecord["postCount"] = 0;
+            benefactorRecord["author_payout_STU"] = 0;
+            benefactorRecord["voteCount"] = 0;
+            benefactorRecord["curator_payout_STU"] = 0;
+            benefactorRecord["total_payout_STU"] = benefactorRecord.benefactor_payout_STU;
+            authorInput.push(benefactorRecord);
+        } else {
+            authorRecord["benefactorCount"] = benefactorRecord.benefactorCount;
+            authorRecord["benefactor_payout_STU"] = benefactorRecord.benefactor_payout_STU;
+            authorRecord["total_payout_STU"] += benefactorRecord.benefactor_payout_STU;
+        }
+    }
+    return authorInput;
+}
+
+module.exports.combineByUser = combineByUser;
+
+
+
+// Convert earnings list into earnings distribution
+// ------------------------------------------------
+function earningsDistribution(earningsList, bucketSize, maxBucketSize, aggregateKey) {
+    //let boundaryArray = [0, 0.0001];
+    let boundaryArray = [];
+    let entry = {earnings: 0, userCount: 0};
+    let numberOfBuckets = maxBucketSize / bucketSize;
+    let catchMax = 10000000;
+
+    Object.keys(earningsList[0]).forEach(function(field) {
+        if (field != 'user') {
+            entry[field] = 0;
+        }
+    });
+
+    for (let i = 0; i < numberOfBuckets + 1; i+=1) {
+        entry['earnings'] = i * bucketSize
+        boundaryArray.push(Object.assign({}, entry));
+    }
+    entry['earnings'] = catchMax;
+    boundaryArray.push(Object.assign({}, entry));
+
+     for (let j = 0; j < earningsList.length; j+=1) {
+        for (let k = 0; k < boundaryArray.length-1; k+=1) {
+            if (earningsList[j][aggregateKey] >= boundaryArray[k].earnings && earningsList[j][aggregateKey] < boundaryArray[k+1].earnings) {
+                boundaryArray[k]['userCount'] += 1;
+                Object.keys(earningsList[j]).forEach(function(field) {
+                    if (field != 'user') {
+                        boundaryArray[k][field] += earningsList[j][field];
+                    }
+                });
+            }
+        }
+    }
+    boundaryArray.splice(boundaryArray.length-1, 1);
+
+    return boundaryArray;
+}
+
+module.exports.earningsDistribution = earningsDistribution;

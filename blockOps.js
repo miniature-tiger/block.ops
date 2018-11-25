@@ -87,6 +87,8 @@ if (commandLine == 'setup') {
     followSummary();
 } else if (commandLine == 'powersummary') {
     powerSummary();
+} else if (commandLine == 'earningsdistribution') {
+    earningsDistribution();
 } else {
     // end
 }
@@ -277,6 +279,7 @@ async function fillOperations() {
     let checkCo = await mongoblock.checkCollectionExists(db, 'comments');
     if (checkCo == false) {
         db.collection('comments').createIndex({author: 1, permlink: 1}, {unique:true});
+        db.collection('comments').createIndex({blockNumber: 1}, {unique:false});
     }
 
     let checkTr = await mongoblock.checkCollectionExists(db, 'transfers');
@@ -671,7 +674,7 @@ async function patchVirtualOperations() {
                     let arrayPosition = lostArray.findIndex(fI => fI.virtual_op == record.operations.virtualOp);
                     if (arrayPosition == -1) {
                         console.dir(record, {depth: null})
-                        
+
                     }
                     lostArray[arrayPosition].opStatus = record.operations.status;
                 } else if (record.operations.hasOwnProperty('associatedOp')) {
@@ -1422,6 +1425,69 @@ async function powerSummary() {
         console.dir(powerArray[1], {depth: null})
         const fieldNames = ['_id.date', 'powerUp', 'powerDown', 'downReleaseVests', 'downReleaseSteem'];
         postprocessing.dataExport(powerArray[0].slice(0), 'powerUpDownDate', fieldNames);
+    } else {
+        console.log('Parameter issue');
+    }
+
+    console.log('closing mongo db');
+    client.close();
+}
+
+
+
+// Earnings distribution summary
+// -----------------------------------
+async function earningsDistribution() {
+    let authorEarnings = [];
+    let curatorEarnings = [];
+    let benefactorEarnings = [];
+    let combinedEarnings = [];
+
+    const fieldNamesEarnings = ['user', 'postCount', 'author_payout_STU', 'voteCount', 'curator_payout_STU', 'benefactorCount', 'benefactor_payout_STU', 'total_payout_STU'];
+    const fieldNamesDistribution = ['earnings', 'userCount', 'postCount', 'author_payout_STU', 'voteCount', 'curator_payout_STU', 'benefactorCount', 'benefactor_payout_STU', 'total_payout_STU'];
+
+    client = await MongoClient.connect(url, { useNewUrlParser: true, connectTimeoutMS: 600000, socketTimeoutMS: 600000 });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    if (parameterIssue == false) {
+        authorEarnings = await mongoblock.authorEarningsMongo(db, openBlock, closeBlock, 'all');
+        authorEarnings = postprocessing.tidyID(authorEarnings);
+        authorDistribution = await postprocessing.earningsDistribution(authorEarnings, 1, 10000, 'author_payout_STU');
+        postprocessing.dataExport(authorDistribution.slice(0), 'authorDistribution', fieldNamesDistribution);
+        //console.dir(authorDistribution, {depth: null})
+        console.log('Timecheck: authorDistribution ' + (Date.now() - launchTime)/1000/60);
+
+        curatorEarnings = await mongoblock.curatorEarningsMongo(db, openBlock, closeBlock, 'all');
+        curatorEarnings = postprocessing.tidyID(curatorEarnings);
+        curatorDistribution = await postprocessing.earningsDistribution(curatorEarnings, 1, 10000, 'curator_payout_STU');
+        postprocessing.dataExport(curatorDistribution.slice(0), 'curatorDistribution', fieldNamesDistribution);
+        //console.dir(curatorEarnings, {depth: null})
+        console.log('Timecheck: curatorDistribution ' + (Date.now() - launchTime)/1000/60);
+
+        benefactorEarnings = await mongoblock.benefactorEarningsMongo(db, openBlock, closeBlock, 'all');
+        benefactorEarnings = postprocessing.tidyID(benefactorEarnings);
+        benefactorDistribution = await postprocessing.earningsDistribution(benefactorEarnings, 1, 10000, 'benefactor_payout_STU');
+        postprocessing.dataExport(benefactorDistribution.slice(0), 'benefactorDistribution', fieldNamesDistribution);
+        //console.dir(benefactorEarnings, {depth: null})
+        console.log('Timecheck: benefactorDistribution ' + (Date.now() - launchTime)/1000/60);
+
+        combinedEarnings = postprocessing.combineByUser(authorEarnings, curatorEarnings, benefactorEarnings);
+        //console.dir(combinedEarnings, {depth: null})
+        console.log('Timecheck: combinedDistribution ' + (Date.now() - launchTime)/1000/60);
+        postprocessing.dataExport(combinedEarnings.slice(0), 'combinedEarnings', fieldNamesEarnings);
+
+        let combinedDistribution = await postprocessing.earningsDistribution(combinedEarnings, 1, 10000, 'total_payout_STU');
+        //console.dir(combinedDistribution, {depth: null});
+        postprocessing.dataExport(combinedDistribution.slice(0), 'combinedDistribution', fieldNamesDistribution);
+
+        let combinedDistribution100 = await postprocessing.earningsDistribution(combinedEarnings, 100, 3000, 'total_payout_STU');
+        postprocessing.dataExport(combinedDistribution100.slice(0), 'combinedDistribution100', fieldNamesDistribution);
+
+
+        console.log('End time: ' + (Date.now() - launchTime)/1000/60);
+        console.log('----------------');
     } else {
         console.log('Parameter issue');
     }
