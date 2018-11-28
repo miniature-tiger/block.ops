@@ -193,8 +193,40 @@ module.exports.tidyID = tidyID;
 
 // Combine earnings list inputs into single list
 // ---------------------------------------------
-function combineByUser(authorInput, curatorInput, benefactorInput) {
-    for (let authorRecord of authorInput) {
+function combineByUser(firstInput, firstPayout, secondInput, secondPayout, addSub) {
+
+    let firstFields = Object.keys(firstInput[0]);
+    let secondFields = Object.keys(secondInput[0]);
+
+    for (let recordFirst of firstInput) {
+        for (let fieldSecond of secondFields) {
+            if (fieldSecond != 'user' && fieldSecond != 'total_payout_STU') {
+                recordFirst[fieldSecond] = 0;
+            }
+        }
+        recordFirst["total_payout_STU"] = recordFirst[firstPayout];
+    }
+
+    for (let recordSecond of secondInput) {
+        let recordFirst = firstInput.find(first => first.user == recordSecond.user);
+        if (recordFirst == undefined) {
+            for (let fieldFirst of firstFields) {
+                if (fieldFirst != 'user' && fieldFirst != 'total_payout_STU') {
+                    recordSecond[fieldFirst] = 0;
+                }
+            }
+            recordSecond["total_payout_STU"] = recordSecond[secondPayout] * addSub;
+            firstInput.push(recordSecond);
+        } else {
+            for (let fieldSecond of secondFields) {
+                if (fieldSecond != 'user' && fieldSecond != 'total_payout_STU') {
+                    recordFirst[fieldSecond] = recordSecond[fieldSecond];
+                }
+            }
+            recordFirst["total_payout_STU"] += recordSecond[secondPayout] * addSub;
+        }
+    }
+    /*for (let authorRecord of authorInput) {
         authorRecord["voteCount"] = 0;
         authorRecord["curator_payout_STU"] = 0;
         authorRecord["benefactorCount"] = 0;
@@ -232,8 +264,8 @@ function combineByUser(authorInput, curatorInput, benefactorInput) {
             authorRecord["benefactor_payout_STU"] = benefactorRecord.benefactor_payout_STU;
             authorRecord["total_payout_STU"] += benefactorRecord.benefactor_payout_STU;
         }
-    }
-    return authorInput;
+    } */
+    return firstInput;
 }
 
 module.exports.combineByUser = combineByUser;

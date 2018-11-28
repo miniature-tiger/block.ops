@@ -980,6 +980,7 @@ async function fillPrices() {
 }
 
 
+
 // Function to display and export prices over specific dates
 // ----------------------------------------------------------
 // allows date graphs to be produced for reasonableness checks
@@ -1438,13 +1439,9 @@ async function powerSummary() {
 // Earnings distribution summary
 // -----------------------------------
 async function earningsDistribution() {
-    let authorEarnings = [];
-    let curatorEarnings = [];
-    let benefactorEarnings = [];
-    let combinedEarnings = [];
 
-    const fieldNamesEarnings = ['user', 'postCount', 'author_payout_STU', 'voteCount', 'curator_payout_STU', 'benefactorCount', 'benefactor_payout_STU', 'total_payout_STU'];
-    const fieldNamesDistribution = ['earnings', 'userCount', 'postCount', 'author_payout_STU', 'voteCount', 'curator_payout_STU', 'benefactorCount', 'benefactor_payout_STU', 'total_payout_STU'];
+    const fieldNamesEarnings = ['user', 'postCount', 'author_payout_STU', 'userGroupVoteCount', 'userGroup_payout_STU', 'voteCount', 'curator_payout_STU', 'benefactorCount', 'benefactor_payout_STU', 'total_payout_STU'];
+    const fieldNamesDistribution = ['earnings', 'userCount', 'postCount', 'author_payout_STU', 'userGroupVoteCount', 'userGroup_payout_STU', 'voteCount', 'curator_payout_STU', 'benefactorCount', 'benefactor_payout_STU', 'total_payout_STU'];
 
     client = await MongoClient.connect(url, { useNewUrlParser: true, connectTimeoutMS: 600000, socketTimeoutMS: 600000 });
     console.log('Connected to server.');
@@ -1452,39 +1449,46 @@ async function earningsDistribution() {
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
     if (parameterIssue == false) {
-        authorEarnings = await mongoblock.authorEarningsMongo(db, openBlock, closeBlock, 'all');
+
+        let authorEarnings = await mongoblock.authorEarningsMongo(db, openBlock, closeBlock, 'all');
         authorEarnings = postprocessing.tidyID(authorEarnings);
-        authorDistribution = await postprocessing.earningsDistribution(authorEarnings, 1, 10000, 'author_payout_STU');
+        let authorDistribution = await postprocessing.earningsDistribution(authorEarnings, 1, 10000, 'author_payout_STU');
         postprocessing.dataExport(authorDistribution.slice(0), 'authorDistribution', fieldNamesDistribution);
         //console.dir(authorDistribution, {depth: null})
         console.log('Timecheck: authorDistribution ' + (Date.now() - launchTime)/1000/60);
 
-        curatorEarnings = await mongoblock.curatorEarningsMongo(db, openBlock, closeBlock, 'all');
+        let bidbotEarnings = await mongoblock.voteGroupEarningsMongo(db, openBlock, closeBlock, 'all', steemdata.bidbotArray);
+        bidbotEarnings = postprocessing.tidyID(bidbotEarnings);
+        let bidbotDistribution = await postprocessing.earningsDistribution(bidbotEarnings, 1, 10000, 'userGroup_payout_STU');
+
+        postprocessing.dataExport(bidbotDistribution.slice(0), 'bidbotDistribution', fieldNamesDistribution);
+        //console.dir(bidbotDistribution, {depth: null});
+        let combinedEarnings = postprocessing.combineByUser(authorEarnings, 'author_payout_STU', bidbotEarnings, 'userGroup_payout_STU', -1);
+        postprocessing.dataExport(combinedEarnings.slice(0), 'authorbidbot', fieldNamesEarnings);
+        console.log('Timecheck: bidbotDistribution ' + (Date.now() - launchTime)/1000/60);
+
+        let curatorEarnings = await mongoblock.curatorEarningsMongo(db, openBlock, closeBlock, 'all');
         curatorEarnings = postprocessing.tidyID(curatorEarnings);
-        curatorDistribution = await postprocessing.earningsDistribution(curatorEarnings, 1, 10000, 'curator_payout_STU');
+        let curatorDistribution = await postprocessing.earningsDistribution(curatorEarnings, 1, 10000, 'curator_payout_STU');
         postprocessing.dataExport(curatorDistribution.slice(0), 'curatorDistribution', fieldNamesDistribution);
         //console.dir(curatorEarnings, {depth: null})
+        combinedEarnings = postprocessing.combineByUser(combinedEarnings.slice(0), 'total_payout_STU', curatorEarnings, 'curator_payout_STU', 1);
         console.log('Timecheck: curatorDistribution ' + (Date.now() - launchTime)/1000/60);
 
-        benefactorEarnings = await mongoblock.benefactorEarningsMongo(db, openBlock, closeBlock, 'all');
+        let benefactorEarnings = await mongoblock.benefactorEarningsMongo(db, openBlock, closeBlock, 'all');
         benefactorEarnings = postprocessing.tidyID(benefactorEarnings);
-        benefactorDistribution = await postprocessing.earningsDistribution(benefactorEarnings, 1, 10000, 'benefactor_payout_STU');
+        let benefactorDistribution = await postprocessing.earningsDistribution(benefactorEarnings, 1, 10000, 'benefactor_payout_STU');
         postprocessing.dataExport(benefactorDistribution.slice(0), 'benefactorDistribution', fieldNamesDistribution);
         //console.dir(benefactorEarnings, {depth: null})
+        combinedEarnings = postprocessing.combineByUser(combinedEarnings.slice(0), 'total_payout_STU', benefactorEarnings, 'benefactor_payout_STU', 1);
+        postprocessing.dataExport(combinedEarnings.slice(0), 'combinedEarnings', fieldNamesEarnings);
         console.log('Timecheck: benefactorDistribution ' + (Date.now() - launchTime)/1000/60);
 
-        combinedEarnings = postprocessing.combineByUser(authorEarnings, curatorEarnings, benefactorEarnings);
-        //console.dir(combinedEarnings, {depth: null})
-        console.log('Timecheck: combinedDistribution ' + (Date.now() - launchTime)/1000/60);
-        postprocessing.dataExport(combinedEarnings.slice(0), 'combinedEarnings', fieldNamesEarnings);
-
         let combinedDistribution = await postprocessing.earningsDistribution(combinedEarnings, 1, 10000, 'total_payout_STU');
-        //console.dir(combinedDistribution, {depth: null});
         postprocessing.dataExport(combinedDistribution.slice(0), 'combinedDistribution', fieldNamesDistribution);
-
         let combinedDistribution100 = await postprocessing.earningsDistribution(combinedEarnings, 100, 3000, 'total_payout_STU');
         postprocessing.dataExport(combinedDistribution100.slice(0), 'combinedDistribution100', fieldNamesDistribution);
-
+        console.log('Timecheck: combinedDistribution ' + (Date.now() - launchTime)/1000/60);
 
         console.log('End time: ' + (Date.now() - launchTime)/1000/60);
         console.log('----------------');

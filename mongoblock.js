@@ -2612,7 +2612,6 @@ async function authorEarningsMongo(db, openBlock, closeBlock, depthInd) {
                                   author_payout_STU_total: { $add: [ "$author_payout_STU.sbd", "$author_payout_STU.steem", "$author_payout_STU.vests"]},
                                   //total_payout_STU: { $add: [ "$author_payout_STU.sbd", "$author_payout_STU.steem", "$author_payout_STU.vests", "$benefactor_payout_STU.sbd", "$benefactor_payout_STU.steem", "$benefactor_payout_STU.vests", "$curator_payout_STU.vests"]},
                           }},
-
             { $group: {_id : { user: "$author" },
                                 "postCount": { $sum: 1 },
                                  author_payout_STU: { $sum: "$author_payout_STU_total" },
@@ -2624,6 +2623,58 @@ async function authorEarningsMongo(db, openBlock, closeBlock, depthInd) {
 }
 
 module.exports.authorEarningsMongo = authorEarningsMongo;
+
+
+
+// Calculates earnings from votes of a parameterised user group
+// --------------------------------------------------------------
+async function voteGroupEarningsMongo(db, openBlock, closeBlock, depthInd, userGroup) {
+
+    let depthChoice = {};
+    if (depthInd == 'posts') {
+        depthChoice = { postComment: 0 };
+    } else if (depthInd == 'comments') {
+        depthChoice = { postComment: 1 };
+    }
+
+    let earningsDistribution = await db.collection('comments').aggregate([
+            { $match :
+                { $and :[
+                    { blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                    depthChoice,
+                    { operations : 'active_votes' },
+                    { transactionType: { $ne: 'commentEdit' }},
+                    { "curators.voter": { $in: userGroup}},
+                ]}},
+            { $unwind : "$curators" },
+            { $match : { "curators.voter": { $in: userGroup}}},
+            { $project : {  _id: 0, author: 1, application: 1,
+                            //userGroup: {$cond: { if: { $in: [ "$curators.voter", userGroup] }, then: true, else: false }},
+                            curators: {dateHour: {$substr: ["$payout_timestamp", 0, 13]}, rshares: 1}
+                            }},
+            { $lookup : {   from: "prices",
+                            localField: "curators.dateHour",
+                            foreignField: "_id",
+                            as: "curator_vote_prices"   }},
+            { $project : {_id: 0, author: 1, application: 1,
+                              "curator_vote_prices": { "$arrayElemAt": [ "$curator_vote_prices", 0 ]},
+                              curators: {rshares: 1}
+                              }},
+            { $project : {_id: 0, author: 1, application: 1,
+                              userGroup_payout_STU: { $multiply: [{ $divide: [ "$curators.rshares", "$curator_vote_prices.rsharesPerSTU" ]}, 0.75]},
+                              }},
+            { $group: {_id : { user: "$author" },
+                                "userGroupVoteCount": { $sum: 1 },
+                                 userGroup_payout_STU: { $sum: "$userGroup_payout_STU" },
+                          }},
+            { $sort: {userGroup_payout_STU: -1}}
+            ])
+            .toArray()
+
+            return earningsDistribution;
+}
+
+module.exports.voteGroupEarningsMongo = voteGroupEarningsMongo;
 
 
 
