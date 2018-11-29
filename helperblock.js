@@ -20,6 +20,24 @@ module.exports.checkSameDay = checkSameDay;
 
 
 
+// Function returns a UTC date one month forward in time
+// ---------------------------------------------------
+function forwardOneMonth(localDate) {
+    let baseDate = new Date(localDate.getTime());
+    let newMonth = baseDate.getUTCMonth() + 1;
+    let newYear = baseDate.getUTCFullYear();
+    if (newMonth == 13) {
+        newMonth = 1;
+        newYear = newYear + 1;
+    }
+    let result = new Date(Date.UTC(newYear, newMonth, baseDate.getUTCDate()));
+    return result;
+}
+
+module.exports.forwardOneMonth = forwardOneMonth;
+
+
+
 // Function returns a UTC date one day forward in time
 // ---------------------------------------------------
 function forwardOneDay(localDate) {

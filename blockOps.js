@@ -328,7 +328,7 @@ async function fillOperations() {
     let debug = false;
     let difficultBlocks = [23791925];
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     console.log(openBlock, closeBlock, parameterIssue);
 
     blocksToProcess = closeBlock - openBlock;
@@ -786,15 +786,17 @@ async function patchVirtualOperations() {
 // -----------------------------------------------------------------
 // Accepts two dates as parameters  or a date and a number
 // Parameters are global and defined on command line
-async function blockRangeDefinition(db) {
+async function blockRangeDefinition(paramOne, paramTwo, db) {
 
     let openBlock = 0, closeBlock = 0, parameterIssue = false;
 
-    if (!(isNaN(parameter1))) {
-        openBlock = Number(parameter1);
-    } else if (typeof parameter1 == 'string') {
-        openDate = new Date(parameter1 + 'T00:00:00.000Z');
+    if (!(isNaN(paramOne))) {
+        openBlock = Number(paramOne);
+    } else if (typeof paramOne == 'string') {
+        openDate = new Date(paramOne + 'T00:00:00.000Z');
+        console.log(openDate)
         openDateEnd = helperblock.forwardOneDay(openDate);
+        console.log(openDateEnd)
         openBlock = await mongoblock.dateToBlockNumber(openDate, openDateEnd, db)
             .catch(function(error) {
                 console.log(error);
@@ -804,11 +806,13 @@ async function blockRangeDefinition(db) {
         parameterIssue = true;
     }
 
-    if (!(isNaN(parameter2))) {
-        closeBlock = openBlock + Number(parameter2);
-    } else if (typeof parameter2 == 'string') {
-        closeDate = new Date(parameter2 + 'T00:00:00.000Z');
+    if (!(isNaN(paramTwo))) {
+        closeBlock = openBlock + Number(paramTwo);
+    } else if (typeof paramTwo == 'string') {
+        closeDate = new Date(paramTwo + 'T00:00:00.000Z');
+        console.log(closeDate)
         closeDateEnd = helperblock.forwardOneDay(closeDate);
+        console.log(closeDateEnd)
         closeBlock = await mongoblock.dateToBlockNumber(closeDate, closeDateEnd, db)
             .catch(function(error) {
                 console.log(error);
@@ -839,7 +843,7 @@ async function fillPrices() {
         //db.collection('prices').createIndex({payout_blockNumber: 1}, {unique:true});
     }
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
 
     let firstHour = await mongoblock.showBlockMongo(db, openBlock, false);
     if (firstHour[0].hasOwnProperty('timestamp')) {
@@ -991,7 +995,7 @@ async function displayPrices() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         displayPrices = await mongoblock.obtainPricesMongo(db, openBlock, closeBlock);
         for (let price of displayPrices) {
@@ -1016,7 +1020,7 @@ async function reportBlocks() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         await mongoblock.reportBlocksProcessed(db, openBlock, closeBlock, 'report', parameter3);
     } else {
@@ -1033,7 +1037,7 @@ async function findComments() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         await mongoblock.findCommentsMongo(parameter3, db, openBlock, closeBlock);
     } else {
@@ -1049,7 +1053,7 @@ async function reportComments() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
 
     if (parameterIssue == false) {
         let marketShareCreatedSummary = await mongoblock.reportCommentsMongo(db, openBlock, closeBlock, parameter3, 'created', 'all', 'default');
@@ -1091,7 +1095,7 @@ async function investigation() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         await mongoblock.investigationMongo(db, openBlock, closeBlock);
     } else {
@@ -1108,7 +1112,7 @@ async function findCurator() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         await mongoblock.findCuratorMongo(parameter3, db, openBlock, closeBlock);
     } else {
@@ -1125,7 +1129,7 @@ async function validateComments() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         await mongoblock.validateCommentsMongo(db, openBlock, closeBlock);
     } else {
@@ -1155,7 +1159,7 @@ async function voteTiming() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
 
         let voteTimingArray = await mongoblock.voteTimingMongo(db, openBlock, closeBlock, steemdata.bidbotArray);
@@ -1183,7 +1187,7 @@ async function postCuration() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         console.log('Getting curation posts.');
         let curationPosts = await mongoblock.postCurationMongo(db, openBlock, closeBlock);
@@ -1234,7 +1238,7 @@ async function utopianVotes() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
 
         let utopianPosts = await mongoblock.reportUtopianCommentsMongo(db, openBlock, closeBlock, 'created', 'posts', 'default');
@@ -1277,7 +1281,7 @@ async function bidbotProfitability() {
     const db = client.db(dbName);
 
     // Defines and validates parameters
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
 
         // Obtains all transfers to and from listed bidbots in date range
@@ -1321,7 +1325,7 @@ async function transferSummary() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         transferArray = await mongoblock.transferSummaryMongo(db, openBlock, closeBlock, parameter3);
         console.dir(transferArray, {depth: null})
@@ -1344,7 +1348,7 @@ async function delegationSummary() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         delegationArray = await mongoblock.delegationSummaryMongo(db, openBlock, closeBlock, parameter3);
         console.dir(delegationArray, {depth: null})
@@ -1367,7 +1371,7 @@ async function accountCreationSummary() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         accountCreationArray = await mongoblock.accountCreationSummaryMongo(db, openBlock, closeBlock);
         let fieldNames = ['_id.dateHour', '_id.type', '_id.creator', '_id.HF20', 'feeAmount', 'count']
@@ -1396,7 +1400,7 @@ async function followSummary() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         followsArray = await mongoblock.followSummaryMongo(db, openBlock, closeBlock, parameter3);
         console.dir(followsArray, {depth: null})
@@ -1419,7 +1423,7 @@ async function powerSummary() {
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         powerArray = await mongoblock.powerSummaryMongo(db, openBlock, closeBlock);
         console.dir(powerArray[0], {depth: null})
@@ -1440,18 +1444,22 @@ async function powerSummary() {
 // -----------------------------------
 async function earningsDistribution() {
 
-    const fieldNamesEarnings = ['user', 'postCount', 'author_payout_STU', 'userGroupVoteCount', 'userGroup_payout_STU', 'voteCount', 'curator_payout_STU', 'benefactorCount', 'benefactor_payout_STU', 'total_payout_STU'];
-    const fieldNamesDistribution = ['earnings', 'userCount', 'postCount', 'author_payout_STU', 'userGroupVoteCount', 'userGroup_payout_STU', 'voteCount', 'curator_payout_STU', 'benefactorCount', 'benefactor_payout_STU', 'total_payout_STU'];
+    const fieldNamesEarnings = ['user', 'retained', 'postCount', 'author_payout_STU', 'userGroupVoteCount', 'userGroup_payout_STU', 'voteCount', 'curator_payout_STU', 'benefactorCount', 'benefactor_payout_STU', 'total_payout_STU'];
+    const fieldNamesDistribution = ['earnings', 'userCount', 'userCountRetained', 'userCountPerc', 'postCount', 'author_payout_STU', 'userGroupVoteCount', 'userGroup_payout_STU', 'voteCount', 'curator_payout_STU', 'benefactorCount', 'benefactor_payout_STU', 'total_payout_STU'];
 
     client = await MongoClient.connect(url, { useNewUrlParser: true, connectTimeoutMS: 600000, socketTimeoutMS: 600000 });
     console.log('Connected to server.');
     const db = client.db(dbName);
 
-    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(db);
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
-
+        let [openBlockTwo, closeBlockTwo, parameterIssueTwo] = await blockRangeDefinition(helperblock.forwardOneMonth(new Date(parameter1 + 'T00:00:00.000Z')).toISOString().slice(0, 10), helperblock.forwardOneMonth(new Date(parameter2 + 'T00:00:00.000Z')).toISOString().slice(0, 10), db);
         let authorEarnings = await mongoblock.authorEarningsMongo(db, openBlock, closeBlock, 'all');
         authorEarnings = postprocessing.tidyID(authorEarnings);
+        let authorEarningsTwo = await mongoblock.authorEarningsMongo(db, openBlockTwo, closeBlockTwo, 'all');
+        authorEarningsTwo = postprocessing.tidyID(authorEarningsTwo);
+        authorEarnings = postprocessing.checkPresent(authorEarnings, authorEarningsTwo);
+        postprocessing.dataExport(authorEarnings.slice(0), 'authorEarnings', fieldNamesEarnings);
         let authorDistribution = await postprocessing.earningsDistribution(authorEarnings, 1, 10000, 'author_payout_STU');
         postprocessing.dataExport(authorDistribution.slice(0), 'authorDistribution', fieldNamesDistribution);
         //console.dir(authorDistribution, {depth: null})
@@ -1465,6 +1473,12 @@ async function earningsDistribution() {
         //console.dir(bidbotDistribution, {depth: null});
         let combinedEarnings = postprocessing.combineByUser(authorEarnings, 'author_payout_STU', bidbotEarnings, 'userGroup_payout_STU', -1);
         postprocessing.dataExport(combinedEarnings.slice(0), 'authorbidbot', fieldNamesEarnings);
+        let authorbidbotDistribution = await postprocessing.earningsDistribution(combinedEarnings, 1, 10000, 'total_payout_STU');
+        postprocessing.dataExport(authorbidbotDistribution.slice(0), 'authorbidbotDistribution', fieldNamesDistribution);
+        let authorbidbotDistributionLow = await postprocessing.earningsDistribution(combinedEarnings, 0.1, 11, 'total_payout_STU');
+        postprocessing.dataExport(authorbidbotDistributionLow.slice(0), 'authorbidbotDistributionLow', fieldNamesDistribution);
+        let authorbidbotDistribution100 = await postprocessing.earningsDistribution(combinedEarnings, 100, 10000, 'total_payout_STU');
+        postprocessing.dataExport(authorbidbotDistribution100.slice(0), 'authorbidbotDistribution100', fieldNamesDistribution);
         console.log('Timecheck: bidbotDistribution ' + (Date.now() - launchTime)/1000/60);
 
         let curatorEarnings = await mongoblock.curatorEarningsMongo(db, openBlock, closeBlock, 'all');
