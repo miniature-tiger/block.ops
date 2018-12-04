@@ -169,3 +169,136 @@ function dataExport(localData, localFileName, fields) {
 }
 
 module.exports.dataExport = dataExport;
+
+
+
+// Remove separate _id object from Mongo output array
+// --------------------------------------------------
+function tidyID(arrayOutput) {
+    let result = [];
+    for (let i = 0; i < arrayOutput.length; i+=1) {
+        let entry = arrayOutput[i]._id;
+        Object.keys(arrayOutput[i]).forEach(function(field) {
+            if (field != '_id') {
+                entry[field] = arrayOutput[i][field];
+            }
+        });
+        result.push(entry)
+    }
+    return result;
+}
+
+module.exports.tidyID = tidyID;
+
+
+// Combine earnings list inputs into single list
+// ---------------------------------------------
+function combineByUser(firstInput, firstPayout, secondInput, secondPayout, addSub) {
+
+    let firstFields = Object.keys(firstInput[0]);
+    let secondFields = Object.keys(secondInput[0]);
+
+    for (let recordFirst of firstInput) {
+        for (let fieldSecond of secondFields) {
+            if (fieldSecond != 'user' && fieldSecond != 'total_payout_STU') {
+                recordFirst[fieldSecond] = 0;
+            }
+        }
+        recordFirst["total_payout_STU"] = recordFirst[firstPayout];
+    }
+
+    for (let recordSecond of secondInput) {
+        let recordFirst = firstInput.find(first => first.user == recordSecond.user);
+        if (recordFirst == undefined) {
+            for (let fieldFirst of firstFields) {
+                if (fieldFirst != 'user' && fieldFirst != 'total_payout_STU' && fieldFirst != 'retained') {
+                    recordSecond[fieldFirst] = 0;
+                }
+            }
+            recordSecond["total_payout_STU"] = recordSecond[secondPayout] * addSub;
+            firstInput.push(recordSecond);
+        } else {
+            for (let fieldSecond of secondFields) {
+                if (fieldSecond != 'user' && fieldSecond != 'total_payout_STU') {
+                    recordFirst[fieldSecond] = recordSecond[fieldSecond];
+                }
+            }
+            recordFirst["total_payout_STU"] += recordSecond[secondPayout] * addSub;
+        }
+    }
+
+    return firstInput;
+}
+
+module.exports.combineByUser = combineByUser;
+
+
+
+// Convert earnings list into earnings distribution
+// ------------------------------------------------
+function earningsDistribution(earningsList, bucketSize, maxBucketSize, aggregateKey) {
+    //let boundaryArray = [0, 0.0001];
+    let boundaryArray = [];
+    let entry = {earnings: 0, userCount: 0, userCountRetained: 0, userCountPerc: 0};
+    let numberOfBuckets = maxBucketSize / bucketSize;
+    let catchMax = 10000000;
+
+    Object.keys(earningsList[0]).forEach(function(field) {
+        if (field != 'user') {
+            entry[field] = 0;
+        }
+    });
+
+    entry['earnings'] = -1000;
+    boundaryArray.push(Object.assign({}, entry));
+    
+    for (let i = 1; i < numberOfBuckets + 1; i+=1) {
+        entry['earnings'] = i * bucketSize
+        boundaryArray.push(Object.assign({}, entry));
+    }
+    entry['earnings'] = catchMax;
+    boundaryArray.push(Object.assign({}, entry));
+
+     for (let j = 0; j < earningsList.length; j+=1) {
+        for (let k = 0; k < boundaryArray.length-1; k+=1) {
+            if (earningsList[j][aggregateKey] >= boundaryArray[k].earnings && earningsList[j][aggregateKey] < boundaryArray[k+1].earnings) {
+                boundaryArray[k]['userCount'] += 1;
+                Object.keys(earningsList[j]).forEach(function(field) {
+                    if (field == 'retained') {
+                        if (earningsList[j][field] == true) {
+                            boundaryArray[k]['userCountRetained'] += 1;
+                            if (boundaryArray[k]['userCount'] > 0) {
+                                boundaryArray[k]['userCountPerc'] = boundaryArray[k]['userCountRetained'] / boundaryArray[k]['userCount'];
+                            }
+                        }
+                    } else if (field != 'user') {
+                        boundaryArray[k][field] += earningsList[j][field];
+                    }
+                });
+            }
+        }
+    }
+    boundaryArray[0]['earnings'] = 0;
+    boundaryArray.splice(boundaryArray.length-1, 1);
+
+    return boundaryArray;
+}
+
+module.exports.earningsDistribution = earningsDistribution;
+
+
+// Check presence of user from one array of objects in second array of objects
+// ---------------------------------------------------------------------------
+function checkPresent(firstList, secondList) {
+    for (let recordFirst of firstList) {
+        let recordSecond = secondList.find(second => second.user == recordFirst.user);
+        if (recordSecond == undefined) {
+            recordFirst["retained"] = false;
+        } else {
+            recordFirst["retained"] = true;
+        }
+    }
+    return firstList;
+}
+
+module.exports.checkPresent = checkPresent;
