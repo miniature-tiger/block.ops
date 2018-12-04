@@ -326,7 +326,7 @@ async function fillOperations() {
     let blockProcessArray = [];
     let blockProcessArrayFlag = false;
     let debug = false;
-    let difficultBlocks = [23791925];
+    let difficultBlocks = [23791925, 28091061];
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     console.log(openBlock, closeBlock, parameterIssue);
@@ -384,6 +384,7 @@ async function fillOperations() {
                 if (difficultBlocks.includes(localBlockNo)) {
                     body = fixBlock(body, localBlockNo);
                 }
+                //console.log(JSON.parse(body).result);
                 let result = JSON.parse(body).result;
                 if( result == undefined) {
                     console.log(localBlockNo)
@@ -541,6 +542,7 @@ async function fillOperations() {
     // Workaround function for exceptional blocks with jsonparse issues
     // ----------------------------------------------------------------
     function fixBlock(localBody, blockToFix) {
+
         console.log('Fixing block.');
         let result = '';
         let openFirst = 0, closeFirst = 0;
@@ -548,8 +550,13 @@ async function fillOperations() {
             openFirst = localBody.indexOf('{"trx_id"', 0);
             closeFirst = localBody.indexOf('{"trx_id"', openFirst + 10);
             result = localBody.slice(0, openFirst) + localBody.slice(closeFirst, localBody.length);
+        } else if (blockToFix == 28091061) {
+            result = localBody;
         }
+
         return result;
+
+
     }
 
 // Closing fillOperations
@@ -1454,18 +1461,20 @@ async function earningsDistribution() {
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
     if (parameterIssue == false) {
         let [openBlockTwo, closeBlockTwo, parameterIssueTwo] = await blockRangeDefinition(helperblock.forwardOneMonth(new Date(parameter1 + 'T00:00:00.000Z')).toISOString().slice(0, 10), helperblock.forwardOneMonth(new Date(parameter2 + 'T00:00:00.000Z')).toISOString().slice(0, 10), db);
-        let authorEarnings = await mongoblock.authorEarningsMongo(db, openBlock, closeBlock, 'all');
+        let authorEarnings = await mongoblock.authorEarningsMongo(db, openBlock, closeBlock, 'all', parameter3);
         authorEarnings = postprocessing.tidyID(authorEarnings);
-        let authorEarningsTwo = await mongoblock.authorEarningsMongo(db, openBlockTwo, closeBlockTwo, 'all');
+        let authorEarningsTwo = await mongoblock.authorEarningsMongo(db, openBlockTwo, closeBlockTwo, 'all', parameter3);
         authorEarningsTwo = postprocessing.tidyID(authorEarningsTwo);
         authorEarnings = postprocessing.checkPresent(authorEarnings, authorEarningsTwo);
         postprocessing.dataExport(authorEarnings.slice(0), 'authorEarnings', fieldNamesEarnings);
         let authorDistribution = await postprocessing.earningsDistribution(authorEarnings, 1, 10000, 'author_payout_STU');
         postprocessing.dataExport(authorDistribution.slice(0), 'authorDistribution', fieldNamesDistribution);
+        let authorDistribution50 = await postprocessing.earningsDistribution(authorEarnings, 50, 1500, 'author_payout_STU');
+        postprocessing.dataExport(authorDistribution50.slice(0), 'authorDistribution50', fieldNamesDistribution);
         //console.dir(authorDistribution, {depth: null})
         console.log('Timecheck: authorDistribution ' + (Date.now() - launchTime)/1000/60);
 
-        let bidbotEarnings = await mongoblock.voteGroupEarningsMongo(db, openBlock, closeBlock, 'all', steemdata.bidbotArray);
+        let bidbotEarnings = await mongoblock.voteGroupEarningsMongo(db, openBlock, closeBlock, 'all', steemdata.bidbotArray, parameter3);
         bidbotEarnings = postprocessing.tidyID(bidbotEarnings);
         let bidbotDistribution = await postprocessing.earningsDistribution(bidbotEarnings, 1, 10000, 'userGroup_payout_STU');
 
@@ -1477,11 +1486,11 @@ async function earningsDistribution() {
         postprocessing.dataExport(authorbidbotDistribution.slice(0), 'authorbidbotDistribution', fieldNamesDistribution);
         let authorbidbotDistributionLow = await postprocessing.earningsDistribution(combinedEarnings, 0.1, 11, 'total_payout_STU');
         postprocessing.dataExport(authorbidbotDistributionLow.slice(0), 'authorbidbotDistributionLow', fieldNamesDistribution);
-        let authorbidbotDistribution100 = await postprocessing.earningsDistribution(combinedEarnings, 100, 10000, 'total_payout_STU');
-        postprocessing.dataExport(authorbidbotDistribution100.slice(0), 'authorbidbotDistribution100', fieldNamesDistribution);
+        let authorbidbotDistribution50 = await postprocessing.earningsDistribution(combinedEarnings, 50, 1500, 'total_payout_STU');
+        postprocessing.dataExport(authorbidbotDistribution50.slice(0), 'authorbidbotDistribution50', fieldNamesDistribution);
         console.log('Timecheck: bidbotDistribution ' + (Date.now() - launchTime)/1000/60);
 
-        let curatorEarnings = await mongoblock.curatorEarningsMongo(db, openBlock, closeBlock, 'all');
+        let curatorEarnings = await mongoblock.curatorEarningsMongo(db, openBlock, closeBlock, 'all', parameter3);
         curatorEarnings = postprocessing.tidyID(curatorEarnings);
         let curatorDistribution = await postprocessing.earningsDistribution(curatorEarnings, 1, 10000, 'curator_payout_STU');
         postprocessing.dataExport(curatorDistribution.slice(0), 'curatorDistribution', fieldNamesDistribution);
@@ -1489,7 +1498,7 @@ async function earningsDistribution() {
         combinedEarnings = postprocessing.combineByUser(combinedEarnings.slice(0), 'total_payout_STU', curatorEarnings, 'curator_payout_STU', 1);
         console.log('Timecheck: curatorDistribution ' + (Date.now() - launchTime)/1000/60);
 
-        let benefactorEarnings = await mongoblock.benefactorEarningsMongo(db, openBlock, closeBlock, 'all');
+        let benefactorEarnings = await mongoblock.benefactorEarningsMongo(db, openBlock, closeBlock, 'all', parameter3);
         benefactorEarnings = postprocessing.tidyID(benefactorEarnings);
         let benefactorDistribution = await postprocessing.earningsDistribution(benefactorEarnings, 1, 10000, 'benefactor_payout_STU');
         postprocessing.dataExport(benefactorDistribution.slice(0), 'benefactorDistribution', fieldNamesDistribution);
@@ -1500,8 +1509,8 @@ async function earningsDistribution() {
 
         let combinedDistribution = await postprocessing.earningsDistribution(combinedEarnings, 1, 10000, 'total_payout_STU');
         postprocessing.dataExport(combinedDistribution.slice(0), 'combinedDistribution', fieldNamesDistribution);
-        let combinedDistribution100 = await postprocessing.earningsDistribution(combinedEarnings, 100, 3000, 'total_payout_STU');
-        postprocessing.dataExport(combinedDistribution100.slice(0), 'combinedDistribution100', fieldNamesDistribution);
+        let combinedDistribution50 = await postprocessing.earningsDistribution(combinedEarnings, 50, 1500, 'total_payout_STU');
+        postprocessing.dataExport(combinedDistribution50.slice(0), 'combinedDistribution50', fieldNamesDistribution);
         console.log('Timecheck: combinedDistribution ' + (Date.now() - launchTime)/1000/60);
 
         console.log('End time: ' + (Date.now() - launchTime)/1000/60);

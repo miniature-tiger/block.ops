@@ -676,7 +676,7 @@ function processFollows(localOperation, localOperationNumber, mongoFollows, db) 
     //console.log(localOperation.op[1].json)
     let jsonInfo = JSON.parse(localOperation.op[1].json);
 
-    if (jsonInfo[0] == 'follow') {
+    if (jsonInfo[0] == 'follow' && jsonInfo[1].hasOwnProperty('what')) {
         if (jsonInfo[1].what.length == 0) {
             followsRecord =   { blockNumber: localOperation.block, transactionNumber: localOperation.trx_in_block, operationNumber: localOperationNumber,
                                   type: 'unfollow', follower: jsonInfo[1].follower, following: jsonInfo[1].following, what: jsonInfo[1].what,
@@ -1628,7 +1628,7 @@ function findCommentsMongo(localApp, db, openBlock, closeBlock) {
             { operations: 'comment'},
             //{ operations: 'vote'},
             //{ operations: 'benefactor_payout'},
-            { author: 'miniature-tiger'},
+            { author: 'tiger-zaps'},
         ]}
 
     ).toArray()
@@ -2573,7 +2573,7 @@ module.exports.powerSummaryMongo = powerSummaryMongo;
 
 // Earnings analysis - author earnings
 // --------------------------------------------------
-async function authorEarningsMongo(db, openBlock, closeBlock, depthInd) {
+async function authorEarningsMongo(db, openBlock, closeBlock, depthInd, appChoice) {
 
     let depthChoice = {};
     if (depthInd == 'posts') {
@@ -2582,6 +2582,12 @@ async function authorEarningsMongo(db, openBlock, closeBlock, depthInd) {
         depthChoice = { postComment: 1 };
     }
 
+    let appDescription = { application: appChoice };
+    if (appChoice == undefined) {
+        appDescription = {}
+    }
+    console.log(appDescription)
+
     // Summary grouped by date
     let earningsDistribution = await db.collection('comments').aggregate([
             { $match :  { $and :[
@@ -2589,7 +2595,7 @@ async function authorEarningsMongo(db, openBlock, closeBlock, depthInd) {
                             depthChoice,
                             { operations: 'comment' },
                             { transactionType: { $ne: 'commentEdit' }},
-                            //appDescription
+                            appDescription
                         ]}},
             { $project : {_id: 0, application: 1, author: 1, transactionType: 1, author_payout: 1, benefactor_payout: 1, curator_payout: 1,
                             payout_timestamp: 1, dateHour: {$substr: ["$payout_timestamp", 0, 13]}, dateDay: {$substr: ["$timestamp", 0, 10]}}},
@@ -2628,13 +2634,18 @@ module.exports.authorEarningsMongo = authorEarningsMongo;
 
 // Calculates earnings from votes of a parameterised user group
 // --------------------------------------------------------------
-async function voteGroupEarningsMongo(db, openBlock, closeBlock, depthInd, userGroup) {
+async function voteGroupEarningsMongo(db, openBlock, closeBlock, depthInd, userGroup, appChoice) {
 
     let depthChoice = {};
     if (depthInd == 'posts') {
         depthChoice = { postComment: 0 };
     } else if (depthInd == 'comments') {
         depthChoice = { postComment: 1 };
+    }
+
+    let appDescription = { application: appChoice };
+    if (appChoice == undefined) {
+        appDescription = {}
     }
 
     let earningsDistribution = await db.collection('comments').aggregate([
@@ -2645,6 +2656,7 @@ async function voteGroupEarningsMongo(db, openBlock, closeBlock, depthInd, userG
                     { operations : 'active_votes' },
                     { transactionType: { $ne: 'commentEdit' }},
                     { "curators.voter": { $in: userGroup}},
+                    appDescription
                 ]}},
             { $unwind : "$curators" },
             { $match : { "curators.voter": { $in: userGroup}}},
@@ -2680,13 +2692,18 @@ module.exports.voteGroupEarningsMongo = voteGroupEarningsMongo;
 
 // Earnings analysis - curator earnings
 // --------------------------------------------------
-async function curatorEarningsMongo(db, openBlock, closeBlock, depthInd) {
+async function curatorEarningsMongo(db, openBlock, closeBlock, depthInd, appChoice) {
 
     let depthChoice = {};
     if (depthInd == 'posts') {
         depthChoice = { postComment: 0 };
     } else if (depthInd == 'comments') {
         depthChoice = { postComment: 1 };
+    }
+
+    let appDescription = { application: appChoice };
+    if (appChoice == undefined) {
+        appDescription = {}
     }
 
     // Summary grouped by date
@@ -2696,7 +2713,7 @@ async function curatorEarningsMongo(db, openBlock, closeBlock, depthInd) {
                             depthChoice,
                             { operations: 'comment' },
                             { transactionType: { $ne: 'commentEdit' }},
-                            //appDescription
+                            appDescription
                         ]}},
             { $unwind : "$curators" },
             { $match : { "curators.vests": {$gt: 0}}},
@@ -2729,13 +2746,18 @@ module.exports.curatorEarningsMongo = curatorEarningsMongo;
 
 // Earnings analysis - benefactor earnings
 // --------------------------------------------------
-async function benefactorEarningsMongo(db, openBlock, closeBlock, depthInd) {
+async function benefactorEarningsMongo(db, openBlock, closeBlock, depthInd, appChoice) {
 
     let depthChoice = {};
     if (depthInd == 'posts') {
         depthChoice = { postComment: 0 };
     } else if (depthInd == 'comments') {
         depthChoice = { postComment: 1 };
+    }
+
+    let appDescription = { application: appChoice };
+    if (appChoice == undefined) {
+        appDescription = {}
     }
 
     // Summary grouped by date
@@ -2745,7 +2767,7 @@ async function benefactorEarningsMongo(db, openBlock, closeBlock, depthInd) {
                             depthChoice,
                             { operations: 'comment' },
                             { transactionType: { $ne: 'commentEdit' }},
-                            //appDescription
+                            appDescription
                         ]}},
             { $unwind : "$benefactors" },
             { $project : {_id: 0, application: 1, author: 1, transactionType: 1, benefactors: 1,

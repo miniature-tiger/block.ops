@@ -249,7 +249,10 @@ function earningsDistribution(earningsList, bucketSize, maxBucketSize, aggregate
         }
     });
 
-    for (let i = 0; i < numberOfBuckets + 1; i+=1) {
+    entry['earnings'] = -1000;
+    boundaryArray.push(Object.assign({}, entry));
+    
+    for (let i = 1; i < numberOfBuckets + 1; i+=1) {
         entry['earnings'] = i * bucketSize
         boundaryArray.push(Object.assign({}, entry));
     }
@@ -275,6 +278,7 @@ function earningsDistribution(earningsList, bucketSize, maxBucketSize, aggregate
             }
         }
     }
+    boundaryArray[0]['earnings'] = 0;
     boundaryArray.splice(boundaryArray.length-1, 1);
 
     return boundaryArray;
