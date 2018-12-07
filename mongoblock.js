@@ -1059,11 +1059,59 @@ module.exports.mongoFillPrices = mongoFillPrices;
 
 
 
+// Function to find power down processes in each hour
+// --------------------------------------------------
+async function mongoPowerPrices(db, openBlock, closeBlock) {
+    console.log(openBlock, closeBlock)
+    let powerDownPrices = [];
+
+    await db.collection('vesting').aggregate([
+        { $match :  {$and:[
+                      { type: 'fill_vesting_withdraw' },
+                      { depositedAmount: { $gt: 0}},
+                      { depositedCurrency: 'STEEM'},
+                      { blockNumber: { $gte: openBlock, $lt: closeBlock }},
+                    ]}},
+        { $project : {_id: 0, timestamp: 1,
+                        dateObject: {$dateToParts: {date: "$timestamp"}},
+                        depositedAmount: 1, depositedCurrency: 1, withdrawnAmount: 1, withdrawnCurrency: 1, blockNumber: 1 }},
+        { $match :  {$and:[
+                        {"dateObject.minute": { $gte: 20, $lte: 40}},
+                      //{"curator_payout.vests": { $gt: 0}}
+                    ]}},
+        { $sort: {"dateObject.year": 1, "dateObject.month": 1, "dateObject.day": 1, "dateObject.hour": 1, withdrawnAmount: 1}},
+        { $group : {_id: {year: "$dateObject.year", month: "$dateObject.month", day: "$dateObject.day", hour: "$dateObject.hour"},
+                          dateHour: {$last: "$timestamp"},
+                          blockNumber: {$last: "$blockNumber"},
+                          depositedAmount: {$last: "$depositedAmount"},
+                          depositedCurrency: {$last: "$depositedCurrency"},
+                          withdrawnAmount: {$last: "$withdrawnAmount"},
+                          withdrawnCurrency: {$last: "$withdrawnCurrency"},
+                  }},
+        { $sort: {blockNumber: 1}}
+        ], {allowDiskUse: true})
+        .toArray()
+        .then(function(prices) {
+            for (let price of prices) {
+                price._id = price.dateHour.toISOString().slice(0, 13);
+            }
+            powerDownPrices = prices;
+        });
+
+
+    return powerDownPrices;
+}
+
+module.exports.mongoPowerPrices = mongoPowerPrices;
+
+
+
 // Function to add price information to Mongo prices collection
 // -------------------------------------------------------------------------
 function mongoPrice(db, localRecord, reattempt) {
+    console.log(localRecord);
     let maxReattempts = 1;
-    return db.collection('prices').insertOne(localRecord)
+    return db.collection('prices').updateOne({_id: localRecord._id}, { $set: localRecord}, {upsert: true})
         .catch(function(error) {
             if(error.code == 11000) {
                 if (reattempt < maxReattempts) {
@@ -1085,11 +1133,12 @@ module.exports.mongoPrice = mongoPrice;
 
 // Function to aggregate price information over date range
 // -------------------------------------------------------
-async function obtainPricesMongo(db, openBlock, closeBlock) {
+async function obtainPricesMongo(db, openBlock, closeBlock, source) {
 
     return await db.collection('prices').aggregate([
-            { $match :    {payout_blockNumber: { $gte: openBlock, $lt: closeBlock }}},
-            { $project :  {_id: 1, vestsPerSTU: 1, rsharesPerSTU: 1, steemPerSTU: 1, STUPerVests: 1, STUPerRshares: 1, STUPerSteem: 1,}},
+            { $match : { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+            { $match : source },
+            //{ $project :  {_id: 1, vestsPerSTU: 1, rsharesPerSTU: 1, steemPerSTU: 1, STUPerVests: 1, STUPerRshares: 1, STUPerSteem: 1,}},
             { $sort: {_id: 1 }},
         ])
         .toArray();
