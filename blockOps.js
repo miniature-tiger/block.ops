@@ -866,8 +866,8 @@ async function blockRangeDefinition(paramOne, paramTwo, db) {
 // Function to fill prices collection
 // ----------------------------------
 async function fillPrices() {
+    let HF20 = steemdata.hardfork.hf20;
     let pricesArray = [];
-    let HF20 = 26256743;
 
     // Connect to Mongo
     client = await MongoClient.connect(url, { useNewUrlParser: true });
@@ -901,7 +901,6 @@ async function fillPrices() {
     if (parameterIssue == false) {
         // Select a comment from each hour (around the 20-40 minute mark!)
         pricesArray = await mongoblock.mongoFillPrices(db, openBlock, closeBlock);
-        console.log(pricesArray)
 
         // Check first and last hour present
         let priceIssue = false;
@@ -917,10 +916,7 @@ async function fillPrices() {
 
         if (priceIssue == false) {
             // Skip prices that have previously been inserted to prices collection
-            let previousPrices = await db.collection('prices')
-                .find({payout_blockNumber: { $gte: openBlock, $lt: closeBlock }})
-                .project({_id: 1})
-                .toArray();
+            let previousPrices = await mongoblock.obtainPricesMongo(db, openBlock, closeBlock, {sourcePayout: {$exists: true}});
             let countSkips = 0;
 
             // Loop through pricesArray starts here
@@ -940,53 +936,15 @@ async function fillPrices() {
                     // Pulls record and calculates currency ratios using payout data from operations (vests, sbd, steem) and payout data from post (STU)
                     await steemrequest.getComment(comment.author, comment.permlink)
                         .then(async function(body) {
-                            result = JSON.parse(body).result;
-                            comment.sourcePayout = 'derived';
-                            //comment._id = comment.dateHour.toISOString().slice(0, 13);
-                            comment.curator_payout_vests = Number(comment.curator_payout_vests.toFixed(6));
-                            comment.curator_payout_value = Number(result.curator_payout_value.split(' ', 1)[0]);
-                            comment.author_payout_value = Number(result.total_payout_value.split(' ', 1)[0]);
-                            comment.beneficiaries_payout_value = 0;
-                            comment.total_payout_value = Number((comment.curator_payout_value + comment.author_payout_value).toFixed(3));
-                            beneficiariesSum = 0;
-                            if (result.beneficiaries.length > 0) {
-                                for (var i = 0; i < result.beneficiaries.length; i+=1) {
-                                    beneficiariesSum += result.beneficiaries[i].weight;
-                                }
-                                comment.total_payout_value = Number(((comment.author_payout_value / (1-(beneficiariesSum/10000))) + comment.curator_payout_value).toFixed(3));
-                                comment.beneficiaries_payout_value = Number((comment.total_payout_value - comment.author_payout_value - comment.curator_payout_value).toFixed(3));
-                            }
-                            comment.vestsPerSTU = Number((comment.curator_payout_vests / comment.curator_payout_value).toFixed(3));
-                            comment.STUPerVests = Number((comment.curator_payout_value / comment.curator_payout_vests).toPrecision(8));
-                            comment.steemPerSTU = 0;
-                            comment.STUPerSteem = 0;
-                            if (comment.author_payout_steem > 0) {
-                                comment.steemPerSTU = Number((comment.author_payout_steem / (comment.author_payout_value - comment.author_payout_sbd - (comment.author_payout_vests/comment.vestsPerSTU))).toFixed(3));
-                                comment.STUPerSteem = Number(((comment.author_payout_value - comment.author_payout_sbd - (comment.author_payout_vests/comment.vestsPerSTU)) / (comment.author_payout_steem)).toPrecision(8));
-                            }
-
-                            if (comment.payout_blockNumber < HF20) {
-                                console.log('HF19')
-                                comment.rsharesPerSTU = Number((comment.rshares / comment.total_payout_value).toFixed(3));
-                                comment.STUPerRshares = Number((comment.total_payout_value / comment.rshares).toPrecision(8));
-                            } else {
-                                console.log('HF20')
-                                comment.rsharesPerSTU = Number(((comment.rshares * 0.75) / (comment.author_payout_value + comment.beneficiaries_payout_value)).toFixed(3));
-                                comment.STUPerRshares = Number(((comment.author_payout_value + comment.beneficiaries_payout_value)/ (comment.rshares * 0.75)).toPrecision(8));
-                            }
+                            comment = await postprocessing.payoutPrices(comment, body, HF20);
                             await mongoblock.mongoPrice(db, comment, 0);
-
-                            console.log(comment)
-                    })
+                    });
                 }
             }
-            console.log(countSkips + ' record skips as already exits in prices collection.')
+            console.log(countSkips + ' record skips as already exits in prices collection.');
 
             // Interpolation
-            let updatedPrices = await db.collection('prices')
-                .find({payout_blockNumber: { $gte: openBlock, $lt: closeBlock }})
-                .project({_id: 1, vestsPerSTU: 1, steemPerSTU: 1, rsharesPerSTU:1, STUPerVests: 1, STUPerRshares: 1, STUPerSteem: 1})
-                .toArray();
+            let updatedPrices = await mongoblock.obtainPricesMongo(db, openBlock, closeBlock, {sourcePayout: {$exists: true}});
 
             for (var j = 0; j < updatedPrices.length-1; j+=1) {
                 let nextDate = new Date(updatedPrices[j+1]._id + ':00:00.000Z');

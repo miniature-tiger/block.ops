@@ -251,7 +251,7 @@ function earningsDistribution(earningsList, bucketSize, maxBucketSize, aggregate
 
     entry['earnings'] = -1000;
     boundaryArray.push(Object.assign({}, entry));
-    
+
     for (let i = 1; i < numberOfBuckets + 1; i+=1) {
         entry['earnings'] = i * bucketSize
         boundaryArray.push(Object.assign({}, entry));
@@ -302,3 +302,48 @@ function checkPresent(firstList, secondList) {
 }
 
 module.exports.checkPresent = checkPresent;
+
+
+
+// Derivation of fx rates from post payout amounts for a single post
+// -----------------------------------------------------------------
+
+async function payoutPrices(localComment, localBody, HF20) {
+
+    let result = JSON.parse(localBody).result;
+    localComment.sourcePayout = 'derived';
+    //localComment._id = localComment.dateHour.toISOString().slice(0, 13);
+    localComment.curator_payout_vests = Number(localComment.curator_payout_vests.toFixed(6));
+    localComment.curator_payout_value = Number(result.curator_payout_value.split(' ', 1)[0]);
+    localComment.author_payout_value = Number(result.total_payout_value.split(' ', 1)[0]);
+    localComment.beneficiaries_payout_value = 0;
+    localComment.total_payout_value = Number((localComment.curator_payout_value + localComment.author_payout_value).toFixed(3));
+    beneficiariesSum = 0;
+    if (result.beneficiaries.length > 0) {
+        for (var i = 0; i < result.beneficiaries.length; i+=1) {
+            beneficiariesSum += result.beneficiaries[i].weight;
+        }
+        localComment.total_payout_value = Number(((localComment.author_payout_value / (1-(beneficiariesSum/10000))) + localComment.curator_payout_value).toFixed(3));
+        localComment.beneficiaries_payout_value = Number((localComment.total_payout_value - localComment.author_payout_value - localComment.curator_payout_value).toFixed(3));
+    }
+    localComment.vestsPerSTU = Number((localComment.curator_payout_vests / localComment.curator_payout_value).toFixed(3));
+    localComment.STUPerVests = Number((localComment.curator_payout_value / localComment.curator_payout_vests).toPrecision(8));
+    localComment.steemPerSTU = 0;
+    localComment.STUPerSteem = 0;
+    if (localComment.author_payout_steem > 0) {
+        localComment.steemPerSTU = Number((localComment.author_payout_steem / (localComment.author_payout_value - localComment.author_payout_sbd - (localComment.author_payout_vests/localComment.vestsPerSTU))).toFixed(3));
+        localComment.STUPerSteem = Number(((localComment.author_payout_value - localComment.author_payout_sbd - (localComment.author_payout_vests/localComment.vestsPerSTU)) / (localComment.author_payout_steem)).toPrecision(8));
+    }
+
+    if (localComment.payout_blockNumber < HF20) {
+        localComment.rsharesPerSTU = Number((localComment.rshares / localComment.total_payout_value).toFixed(3));
+        localComment.STUPerRshares = Number((localComment.total_payout_value / localComment.rshares).toPrecision(8));
+    } else {
+        localComment.rsharesPerSTU = Number(((localComment.rshares * 0.75) / (localComment.author_payout_value + localComment.beneficiaries_payout_value)).toFixed(3));
+        localComment.STUPerRshares = Number(((localComment.author_payout_value + localComment.beneficiaries_payout_value)/ (localComment.rshares * 0.75)).toPrecision(8));
+    }
+
+    return localComment;
+}
+
+module.exports.payoutPrices = payoutPrices;
