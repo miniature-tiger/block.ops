@@ -1631,7 +1631,7 @@ async function reportBlocksProcessed(db, openBlock, closeBlock, retort, detail) 
         } else {
             console.log(okArray[0], okArray[okArray.length-1], okArray.length);
             if (okArray.length != 1000) {
-                console.log(okArray)
+                //console.log(okArray)
             }
         }
         console.log('result');
