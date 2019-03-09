@@ -8,7 +8,6 @@ const launchTime = Date.now();
 console.log('                             time = ' + (Date.now() - launchTime));
 console.log('------------------------------------------------------------------------');
 
-
 // Imports
 // -------
 const mongodb = require('mongodb');
@@ -356,6 +355,9 @@ async function fillOperations() {
     let blockProcessArray = [];
     let blockProcessArrayFlag = false;
     let debug = false;
+    let apiCalls = 0;
+    let apiCallsPerMinute = 0;
+    let callDelay = 1500;
     let difficultBlocks = [23791925, 28091061];
 
     let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
@@ -369,7 +371,7 @@ async function fillOperations() {
     // Function to extract data of x blocks from the blockchain (originally five blocks)
     // ---------------------------------------------------------------------------------
     async function fiveBlock(localMarker) {
-        if(debug == true) {console.log('localMarker', localMarker)};
+        if(debug === true) {console.log('localMarker', localMarker)};
         let launchBlocks = Math.min(blocksPerRound, blocksToProcess - blocksStarted - blocksOK);
         console.log(launchBlocks, blocksToProcess - blocksStarted - blocksOK);
         for (var i = 0; i < launchBlocks; i+=1) {
@@ -394,7 +396,9 @@ async function fillOperations() {
                 if(debug == true) {console.log('localMarker, blockNo = blockProcessArray[blocksStarted - priorArrayCount]:', localMarker, blocksStarted, priorArrayCount, blocksStarted - priorArrayCount)};
                 blockNo = blockProcessArray[blocksStarted - priorArrayCount];
                 // Gets data for one block, processes it in callback "processOps"
-                if(debug == true) {console.log('getOpsAppBase', blockNo)};
+                if(debug == true) {console.log('calling getOpsAppBase', blockNo)};
+                apiCalls += 1;
+                //console.log("steemrequest", blockNo, " || seconds:", ((Date.now() - launchTime)/1000).toFixed(1))
                 steemrequest.getOpsAppBase(blockNo, processOps);
                 blocksStarted += 1;
             } else {
@@ -408,13 +412,15 @@ async function fillOperations() {
     // Function to process block of operations
     // -----------------------------------------
     function processOps(error, response, body, localBlockNo) {
+        //console.log("processOps", localBlockNo, " || seconds:", ((Date.now() - launchTime)/1000).toFixed(1))
+        if(debug === true) {console.log('localBlockNo start processOps', localBlockNo)};
         if (!error) {
             try {
                 // Workaround for exceptional blocks with jsonparse issues
                 if (difficultBlocks.includes(localBlockNo)) {
                     body = fixBlock(body, localBlockNo);
                 }
-                //console.log(JSON.parse(body).result);
+                //console.log(body);
                 let result = JSON.parse(body).result;
                 if( result == undefined) {
                     console.log(localBlockNo)
@@ -499,6 +505,8 @@ async function fillOperations() {
                         // Virtual operations
                         } else if (operation.op[0] == 'author_reward') {
                             mongoblock.validateComments(db, operation);
+                            apiCalls+=1;
+                            //console.log("activeVotes", localBlockNo)
                             activeVotes(operation, db);
                             mongoblock.processAuthorReward(operation, mongoblock.mongoAuthorReward, db);
                         } else if (operation.op[0] == 'comment_benefactor_reward') {
@@ -520,14 +528,32 @@ async function fillOperations() {
                 // Supplement block document with all count of operations that are skipped or not handled (for check-total purposes)
                 let recordOperation = {transactionType: 'notHandled', ops_not_handled: opsNotHandled, skipped_ops: skippedOperations, count: opsNotHandled + skippedOperations, status: 'OK'};
                 mongoblock.mongoOperationProcessed(db, localBlockNo, recordOperation, opsNotHandled + skippedOperations, 0);
+                //console.log("blockCompleted:", localBlockNo, " || seconds:", ((Date.now() - launchTime)/1000).toFixed(1))
                 blocksCompleted += 1;
 
-                if(debug == true) {console.log('blocksStarted - blocksCompleted', blocksStarted, - blocksCompleted)};
-                if (blocksCompleted + blocksOK == blocksToProcess) {
+                if(debug === true) {console.log('blocksStarted - blocksCompleted, localBlockNo', blocksStarted, - blocksCompleted, localBlockNo)};
+                if (blocksCompleted + blocksOK === blocksToProcess) {
                     completeOperationsLoop();
-
-                } else if ((blocksStarted - blocksCompleted < 4) && (blockProcessArrayFlag == false)) {
-                    fiveBlock('marker' + blocksStarted);
+                //} else if ((blocksStarted - blocksCompleted === 0) && (blockProcessArrayFlag === false)) {
+                } else if ((blocksStarted - blocksCompleted === Math.round(blocksPerRound/2,0)) && (blockProcessArrayFlag == false)) {
+                    //console.log('fiveBlock', 'blocksStarted: ',blocksStarted , 'blocksCompleted: ', blocksCompleted);
+                    //console.log("pre-call", blocksStarted, blocksCompleted, " || seconds:", ((Date.now() - launchTime)/1000).toFixed(1))
+                    apiCallsPerMinute = Math.round(apiCalls / ((Date.now() - launchTime) / 60000), 1)
+                    if (apiCallsPerMinute > 350) {
+                        callDelay = Math.min(callDelay + 30, 1700)
+                    } else if (apiCallsPerMinute < 300) {
+                        callDelay = Math.max(callDelay - 30, 1300)
+                    } else {
+                        callDelay = Math.round(1500 + (callDelay - 1500) * 0.9)
+                    }
+                    setTimeout(function(passedBlocksStarted, passedApiCalls, passedApiCallsPerMinute) {
+                        //console.log("call", ((Date.now() - launchTime)/1000).toFixed(1))
+                        console.log('|| API calls:', passedApiCalls, ' || Seconds:', Math.round((Date.now() - launchTime)/1000, 0), ' || API calls per minute:', passedApiCallsPerMinute, '|| call delay:', callDelay);
+                        fiveBlock('marker' + passedBlocksStarted);
+                    }, callDelay, blocksStarted, apiCalls, apiCallsPerMinute)
+                } else {
+                    //console.log("no call", blocksStarted, blocksCompleted)
+                    //console.log('else clause', 'blocksStarted: ',blocksStarted , 'blocksCompleted: ', blocksCompleted);
                 }
             } catch (error) {
                 console.log(error);
@@ -536,6 +562,19 @@ async function fillOperations() {
                 mongoblock.mongoErrorLog(db, errorRecord, 0);
                 blocksCompleted += 1;
                 errorCount += 1;
+                if(debug === true) {console.log('errorCount', errorCount)};
+                if (blocksCompleted + blocksOK == blocksToProcess) {
+                    completeOperationsLoop();
+                //} else if ((blocksStarted - blocksCompleted === 0) && (blockProcessArrayFlag === false)) {
+                } else if ((blocksStarted - blocksCompleted === Math.round(blocksPerRound/2,0)) && (blockProcessArrayFlag == false)) {
+                    setTimeout(function(passedBlocksStarted, passedApiCalls) {
+                        //console.log('|| API calls:', passedApiCalls, ' || Seconds:', Math.round((Date.now() - launchTime)/1000, 0), ' || API calls per minute:', Math.round(apiCalls / ((Date.now() - launchTime) / 60000), 1))
+                        //console.log("error call", ((Date.now() - launchTime)/1000).toFixed(1))
+                        fiveBlock('marker' + passedBlocksStarted);
+                    }, 10000, blocksStarted, apiCalls)
+                } else {
+                    //console.log("no call", blocksStarted, blocksCompleted)
+                }
             }
         } else {
             console.log('Error in processing virtual ops:', localBlockNo);
@@ -550,6 +589,8 @@ async function fillOperations() {
             mongoblock.mongoErrorLog(db, errorRecord, 0);
             blocksCompleted += 1;
             errorCount += 1;
+            if(debug === true) {console.log('errorCount', errorCount)};
+
         }
     }
 
@@ -1355,6 +1396,9 @@ async function transferSummary() {
     if (parameterIssue == false) {
         transferArray = await mongoblock.transferSummaryMongo(db, openBlock, closeBlock, parameter3);
         console.dir(transferArray, {depth: null})
+        // Output to csv file
+        const fieldNames = ['from', 'to', 'amount', 'currency', 'timestamp', 'party']
+        postprocessing.dataExport(transferArray[0].party.slice(0), 'transfersByParty', fieldNames);
     } else {
         console.log('Parameter issue');
     }
