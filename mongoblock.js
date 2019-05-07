@@ -1022,6 +1022,7 @@ async function mongoFillPrices(db, openBlock, closeBlock) {
     await db.collection('comments').aggregate([
         { $match :  {$and:[
                       { operations: 'author_reward'},
+                      { "author_payout.vests": { $gt: 0}},    // later calculations cannot handle 100% beneficiary payouts
                       { "curator_payout.vests": { $gte: 500}},
                       { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }},
                     ]}},
@@ -1677,7 +1678,6 @@ function findCommentsMongo(localApp, db, openBlock, closeBlock) {
             { operations: 'comment'},
             //{ operations: 'vote'},
             //{ operations: 'benefactor_payout'},
-            { author: 'tiger-zaps'},
         ]}
 
     ).toArray()
@@ -1733,6 +1733,46 @@ function investigationMongo(db, openBlock, closeBlock) {
 
 module.exports.investigationMongo = investigationMongo;
 
+
+// New April 2019 curation analysis
+// ------------------------------------------------------------------------------------
+async function newCurationAnalysisMongo(db, openBlock, closeBlock) {
+
+    let curationData = await db.collection('comments').aggregate([
+            { $match :    { payout_blockNumber: { $gte: openBlock, $lt: closeBlock }}},
+            { $unwind : "$curators" },
+            { $project :  { author: 1, permlink: 1, blockNumber: 1, rshares: 1,
+                            curators: { vote_timestamp: 1, voter: 1, vests: 1, rshares: 1, curation_weight: 1,
+                                fullVoteEst: {$cond: { if: { $eq: ["$curators.percent", 0] }, then: 0, else: { $multiply: [ { $divide: [ "$curators.rshares", "$curators.percent"]}, 100]}}} ,
+                                dateHour: {$substr: ["$curators.vote_timestamp", 0, 13]}}
+                          }},
+            { $lookup :   { from: "prices",
+                            localField: "curators.dateHour",
+                            foreignField: "_id",
+                            as: "curator_vote_prices" }},
+            { $project :  { _id: 0, author: 1, permlink: 1, blockNumber: 1,
+                            curators: { voter: 1, vests: 1, rshares: 1, curation_weight: 1, dateHour: 1,
+                            fullVoteEstimate: {$ifNull: ["$curators.fullVoteEst", 0]}},
+                            "curator_vote_prices": { "$arrayElemAt": [ "$curator_vote_prices", 0 ]}}},
+            { $project :  { _id: 0, author: 1, permlink: 1, blockNumber: 1,
+                            curators: { voter: 1, curation_weight: 1, fullVoteEstimate: 1,
+                                      STU_vote_value: { $divide: [ "$curators.rshares", "$curator_vote_prices.rsharesPerSTU" ]},
+                                      STU_reward: { $divide: [ "$curators.vests", "$curator_vote_prices.vestsPerSTU" ]},
+                                      STU_fullVoteValue: { $divide: [ "$curators.fullVoteEstimate", "$curator_vote_prices.rsharesPerSTU" ]}},
+                          }},
+            { $group :    { _id : {user : "$curators.voter"},
+                            STU_reward: {$sum: "$curators.STU_reward"},
+                            STU_vote_value: {$sum: "$curators.STU_vote_value"},
+                            STU_fullVoteValue: {$max: "$curators.STU_fullVoteValue"},
+                          }},
+        ], {allowDiskUse: true})
+        .toArray()
+        console.log(curationData)
+
+        return curationData
+}
+
+module.exports.newCurationAnalysisMongo = newCurationAnalysisMongo;
 
 
 // Analysis of curator rewards: vests to rshares ratio for a single voter or all voters
@@ -2191,7 +2231,7 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
     let utopianResults = [];
     let timingResults = [];
     let voteAccount = 'utopian-io';
-    let contributionTypes = ['development', 'analysis', 'translations', 'tutorials', 'video-tutorials', 'bug-hunting', 'ideas', 'idea', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'social', 'antiabuse', 'iamutopian'];
+    let contributionTypes = ['development', 'analysis', 'translations', 'translation', 'tutorials', 'video-tutorials', 'bug-hunting', 'ideas', 'idea', 'graphics', 'blog', 'documentation', 'copywriting', 'visibility', 'social', 'antiabuse', 'anti-abuse', 'iamutopian'];
     let taskTypes = ['task-development', 'task-analysis', 'task-graphics', 'task-documentation', 'task-copywriting', 'task-visibility', 'task-social', 'task-tutorials'];
     let tagGroup = ['steemstem']
 
@@ -2255,7 +2295,7 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
 
                 ],
             }}
-        ])
+        ], {allowDiskUse: true})
         .toArray()
         .then(function(studies) {
             Object.keys(studies[0]).forEach(function(study) {
@@ -2280,6 +2320,10 @@ async function utopianVotesMongo(db, openBlock, closeBlock) {
                             utopianResults[utopianPosition].ideas = Number((utopianResults[utopianPosition].ideas + category.percent).toFixed(2));
                         } else if (category._id.contribution == 'social') {
                             utopianResults[utopianPosition].visibility = Number((utopianResults[utopianPosition].visibility + category.percent).toFixed(2));
+                        } else if (category._id.contribution == 'anti-abuse') {
+                            utopianResults[utopianPosition].antiabuse = Number((utopianResults[utopianPosition].antiabuse + category.percent).toFixed(2));
+                        } else if (category._id.contribution == 'translation') {
+                            utopianResults[utopianPosition].translations = Number((utopianResults[utopianPosition].translations + category.percent).toFixed(2));
                         } else if (category._id.contribution != false) {
                             utopianResults[utopianPosition][category._id.contribution] = Number((utopianResults[utopianPosition][category._id.contribution] + category.percent).toFixed(2));
                         } else if (category._id.steemstem == true) {
@@ -2473,7 +2517,7 @@ module.exports.delegationSummaryMongo = delegationSummaryMongo;
 
 
 
-// Summary of delegations for Account
+// Summary of account creations
 // --------------------------------------------
 async function accountCreationSummaryMongo(db, openBlock, closeBlock) {
     console.log('Summarising all accounts claimed or created with or without delegation.')

@@ -145,9 +145,9 @@ function getOpsAppBase(localBlockNo, processOps) {
         url: url20,
         method: 'POST',
         body: dataString,
-        //timeout: 500
+        timeout: 10000
     }
-
+    //console.log('getOpsAppBase localBlockNo', localBlockNo);
     request(options, function(error, response, body) {
         processOps(error, response, body, localBlockNo);
     });

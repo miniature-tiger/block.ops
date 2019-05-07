@@ -155,6 +155,43 @@ function productionStatsByDayProcessing(summary) {
 module.exports.productionStatsByDayProcessing = productionStatsByDayProcessing;
 
 
+// Tidy to 3dp
+// --------------------------------------------------
+function tidyFixedDP(outputData, fieldsToTidy, decimalPlaces) {
+
+    for (let field of fieldsToTidy) {
+
+        for (let record of outputData) {
+            if (record[field] == null) {
+                console.log(record)
+            } else {
+                record[field] = Number(record[field].toFixed(decimalPlaces));
+            }
+        }
+    }
+    return outputData;
+}
+
+module.exports.tidyFixedDP = tidyFixedDP;
+
+
+// Add a ratio between two fields for each record
+// ---------------------------------------------------
+
+function calculateRatio(outputData, numerator, denomiator) {
+    for (let record of outputData) {
+        if (record[denomiator] != 0) {
+            record['ratio'] = record[numerator] / record[denomiator];
+        } else {
+            record['ratio'] = 0;
+        }
+    }
+    return outputData;
+}
+
+module.exports.calculateRatio = calculateRatio;
+
+
 
 // Export of data into csv file
 // ----------------------------
@@ -189,6 +226,23 @@ function tidyID(arrayOutput) {
 }
 
 module.exports.tidyID = tidyID;
+
+
+// Sort results by field - ascending or descending
+// --------------------------------------------------
+
+function sortResults(resultsArray, sortField, rankOrder) {
+    let sortedArray = [];
+    if (rankOrder == 'Desc') {
+        sortedArray = resultsArray.sort(function(a,b){return b[sortField]-a[sortField]});
+    } else {
+        sortedArray = resultsArray.sort(function(a,b){return a[sortField]-b[sortField]});
+    }
+
+    return sortedArray
+}
+
+module.exports.sortResults = sortResults;
 
 
 // Combine earnings list inputs into single list
@@ -231,6 +285,64 @@ function combineByUser(firstInput, firstPayout, secondInput, secondPayout, addSu
 }
 
 module.exports.combineByUser = combineByUser;
+
+
+// Convert earnings list into earnings distribution
+// ------------------------------------------------
+function simpleDistribution(records, bucketSize, maxBucketSize, aggregateKey) {
+    let boundaryArray = [];
+    let entry = {earnings: 0, userCount: 0};
+    let numberOfBuckets = maxBucketSize / bucketSize;
+    let catchMax = 10000000;
+
+    Object.keys(records[0]).forEach(function(field) {
+        if (field != 'user') {
+            entry[field] = 0;
+        }
+    });
+
+    entry['earnings'] = 0;
+    let zeroResult = Object.assign({}, entry);
+
+    entry['earnings'] = -1000;
+    boundaryArray.push(Object.assign({}, entry));
+
+    for (let i = 0; i < numberOfBuckets + 1; i+=1) {
+        entry['earnings'] = i * bucketSize
+        boundaryArray.push(Object.assign({}, entry));
+    }
+    entry['earnings'] = catchMax;
+    boundaryArray.push(Object.assign({}, entry));
+
+    for (let j = 0; j < records.length; j+=1) {
+        if (records[j][aggregateKey] == 0) {
+            zeroResult['userCount'] += 1;
+            Object.keys(records[j]).forEach(function(field) {
+                if (field != 'user') {
+                    zeroResult[field] += records[j][field];
+                }
+            });
+        }
+        for (let k = 0; k < boundaryArray.length; k+=1) {
+            if (records[j][aggregateKey] >= boundaryArray[k].earnings && records[j][aggregateKey] < boundaryArray[k+1].earnings) {
+                boundaryArray[k]['userCount'] += 1;
+                Object.keys(records[j]).forEach(function(field) {
+                    if (field != 'user') {
+                        boundaryArray[k][field] += records[j][field];
+                    }
+                });
+            }
+        }
+    }
+
+    boundaryArray.push(zeroResult)
+    //boundaryArray[0]['earnings'] = 0;
+    //boundaryArray.splice(boundaryArray.length-1, 1);
+
+    return boundaryArray;
+}
+
+module.exports.simpleDistribution = simpleDistribution;
 
 
 
@@ -323,7 +435,11 @@ async function payoutPrices(localComment, localBody, HF20) {
         for (var i = 0; i < result.beneficiaries.length; i+=1) {
             beneficiariesSum += result.beneficiaries[i].weight;
         }
-        localComment.total_payout_value = Number(((localComment.author_payout_value / (1-(beneficiariesSum/10000))) + localComment.curator_payout_value).toFixed(3));
+        if (beneficiariesSum == 10000) {
+            localComment.total_payout_value = Number((localComment.curator_payout_value).toFixed(3));
+        } else {
+            localComment.total_payout_value = Number(((localComment.author_payout_value / (1-(beneficiariesSum/10000))) + localComment.curator_payout_value).toFixed(3));
+        }
         localComment.beneficiaries_payout_value = Number((localComment.total_payout_value - localComment.author_payout_value - localComment.curator_payout_value).toFixed(3));
     }
     localComment.vestsPerSTU = Number((localComment.curator_payout_vests / localComment.curator_payout_value).toFixed(3));

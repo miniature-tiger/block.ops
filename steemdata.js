@@ -1,8 +1,21 @@
 
 
-bidbotArray = [ "postpromoter", "upmewhale", "therising", "brupvoter", "emperorofnaps", "booster", "brandonfyre",
-                    "oceanwhale", "minnowvotes", "smartsteem", "buildawhale", "rocky1", "sneaky-ninja", "jerrybanfield",
-                    "boomerang", "inciter", "appreciator", "upme", "jeck1", "promobot", "tipu", "bdvoter", "treeplanter", "lays"]
+bidbotArray = [ "appreciator", "a-bot", "alfanso",
+                "buildawhale", "boomerang", "bdvoter", "booster", "brandonfyre", "brupvoter",
+                "emperorofnaps",
+                "honestbot",
+                "inciter", "isotonic", 
+                "jeck1", "jerrybanfield", "joeparys",
+                "lays", "luckyvotes", "lovejuice",
+                "minnowvotes", "mitsuko", "mercurybot", "minnowhelper", "msp-bidbot",
+                "oceanwhale", "onlyprofitbot", "ocdb",
+                "postpromoter", "promobot", "pwrup", "peoplesbot", "profitvote",
+                "rocky1", "redlambo",
+                "smartsteem", "sneaky-ninja", "spydo", "siditech", "shares", "smartmarket",
+                "therising", "tipu", "treeplanter", "thebot",
+                "upmewhale", "upme", "upmyvote", "upyourpost",
+                "whalepromobot", "whalecreator",
+                ]
 
 module.exports.bidbotArray = bidbotArray;
 

@@ -90,6 +90,8 @@ if (commandLine == 'setup') {
     powerSummary();
 } else if (commandLine == 'earningsdistribution') {
     earningsDistribution();
+} else if (commandLine == 'newcuration') {
+    newCuration();
 } else {
     // end
 }
@@ -1584,4 +1586,69 @@ async function earningsDistribution() {
 
     console.log('closing mongo db');
     client.close();
+}
+
+// New curation analysis - April 2019
+// ----------------------------------
+
+async function newCuration() {
+  // Totals per curator over date period
+  //    (a) STU_reward
+  //    (b) STU_vote_value - all votes no restrictions! (Use total a/b to obtain ratio)
+  //    (c) Maximum (rShares / percent) - to give a measure of rShares available for a 100% vote for fish classification
+  //
+  // (1) Split between accounts with rewards and those with none
+  // (2) Distribution of curation earnings by account - (a) made into distribution
+  // (3) Distribution of ratios - (c) made into distribution
+  // (4) Split of (3) by fish classification
+  // (5) Individual large accounts - bidbots, whales etc
+
+    const fieldNamesStats = ['user', 'STU_reward', 'STU_vote_value', 'STU_fullVoteValue', 'ratio'];
+    const fieldNamesDistribution = ['earnings', 'userCount', 'STU_reward', 'STU_vote_value', 'STU_fullVoteValue', 'ratio']
+
+    // Standard mongo connection opening
+    client = await MongoClient.connect(url, { useNewUrlParser: true, connectTimeoutMS: 600000, socketTimeoutMS: 600000 });
+    console.log('Connected to server.');
+    const db = client.db(dbName);
+
+    // Block range and parameter capture
+    let [openBlock, closeBlock, parameterIssue] = await blockRangeDefinition(parameter1, parameter2, db);
+    console.log(openBlock, closeBlock)
+    if (parameterIssue == false) {
+        let curatorStats = await mongoblock.newCurationAnalysisMongo(db, openBlock, closeBlock);
+        console.log('Timecheck: ' + (Date.now() - launchTime)/1000/60);
+
+        curatorStats = postprocessing.tidyID(curatorStats);
+
+        let curationDistribution = await postprocessing.simpleDistribution(curatorStats, 0.1, 100, 'STU_reward');
+        let curationDistributionHigh = await postprocessing.simpleDistribution(curatorStats, 10, 2000, 'STU_reward');
+        let nonzeroCuratorStats = curatorStats.filter(record => record.STU_reward > 0);
+
+        for (let distribution of [curationDistribution, curationDistributionHigh, curatorStats, nonzeroCuratorStats]) {
+            distribution = postprocessing.calculateRatio(distribution, 'STU_reward', 'STU_vote_value');
+        }
+
+        let ratioDistribution = await postprocessing.simpleDistribution(nonzeroCuratorStats, 0.01, 5, 'ratio');
+
+        for (let distribution of [curationDistribution, curationDistributionHigh, curatorStats, nonzeroCuratorStats, ratioDistribution]) {
+            distribution = postprocessing.tidyFixedDP(distribution, ['STU_reward', 'STU_vote_value', 'STU_fullVoteValue', 'ratio'], 5);
+        }
+        curatorRewardsDescending = postprocessing.sortResults(nonzeroCuratorStats.slice(0), 'STU_reward', 'Desc')
+        curatorRatiosDescending = postprocessing.sortResults(nonzeroCuratorStats.slice(0), 'ratio', 'Desc')
+
+        postprocessing.dataExport(curationDistribution.slice(0), 'newCurationDist', fieldNamesDistribution);
+        postprocessing.dataExport(curationDistributionHigh.slice(0), 'newCurationDistHigh', fieldNamesDistribution);
+        postprocessing.dataExport(ratioDistribution.slice(0), 'ratioDistribution', fieldNamesDistribution);
+        postprocessing.dataExport(curatorRewardsDescending.slice(0), 'curatorRewardsDescending', fieldNamesStats);
+        postprocessing.dataExport(curatorRatiosDescending.slice(0), 'curatorRatiosDescending', fieldNamesStats);
+
+    } else {
+        console.log('Parameter issue');
+    }
+
+    // Standard mongo connection closure
+    console.log('closing mongo db');
+    client.close();
+
+
 }
